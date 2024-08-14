@@ -3,11 +3,13 @@ use std::{
     path::PathBuf,
 };
 
+use smoltcp::socket::TcpSocket;
+// NOTE: the name of this type CHANGES between 0.8.2 (the version forked into
+//      Twizzler) and 0.11 (the default that docs.rs shows)⚠️
+
 // a variant of std's tcplistener using smoltcp's api
 pub struct SmolTcpListener(
-    // tcpsocket
-    // NOTE: the name of this type CHANGES between 0.8.2 (the version forked into
-    //      Twizzler) and 0.11 (the default that docs.rs shows)⚠️
+    socket: TcpSocket,
     );
 
 impl SmolTcpListener {
@@ -26,7 +28,7 @@ impl SmolTcpListener {
 }
 
 pub struct SmolTcpStream(
-    // tcpsocket (copy of the one in listener)
+    socket: TcpSocket,
     );
 
 impl SmolTcpStream(){
