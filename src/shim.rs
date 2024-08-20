@@ -1,3 +1,5 @@
+extern crate smoltcp;
+
 use std::{
     net::{Shutdown, SocketAddr, ToSocketAddrs},
     path::PathBuf,
@@ -8,9 +10,9 @@ use smoltcp::socket::TcpSocket;
 //      Twizzler) and 0.11 (the default that docs.rs shows)⚠️
 
 // a variant of std's tcplistener using smoltcp's api
-pub struct SmolTcpListener(
+pub struct SmolTcpListener {
     socket: TcpSocket,
-    );
+    }
 
 impl SmolTcpListener {
     // from
@@ -27,9 +29,9 @@ impl SmolTcpListener {
     // return the stream object  
 }
 
-pub struct SmolTcpStream(
+pub struct SmolTcpStream {
     socket: TcpSocket,
-    );
+    }
 
 impl SmolTcpStream(){
     // read
