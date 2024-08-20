@@ -2,15 +2,16 @@ use std::{
     net::{Shutdown, SocketAddr, ToSocketAddrs},
     path::PathBuf,
 };
+use smoltcp::socket::TcpSocket;
 
 // a variant of std's tcplistener using smoltcp's api
-pub struct SmolTcpListener(
-    // tcpsocket
+pub struct SmolTcpListener<'a> {
+    socket: TcpSocket<'a>
     // NOTE: the name of this type CHANGES between 0.8.2 (the version forked into
     //      Twizzler) and 0.11 (the default that docs.rs shows)⚠️
-    );
+}
 
-impl SmolTcpListener {
+impl<'a> SmolTcpListener<'a> {
     // from
     // listener creates a smoltcp::socket, then calls listen() on it
     
@@ -23,14 +24,17 @@ impl SmolTcpListener {
     // call connect() (i think?) on the copied socket to change it to stream state
     // transfer ownership of the socket from the listener to the stream object
     // return the stream object  
+
+    // bind (?)
 }
 
-pub struct SmolTcpStream(
+pub struct SmolTcpStream<'a> {
     // tcpsocket (copy of the one in listener)
-    );
+    socket: TcpSocket<'a>
+}
 
-impl SmolTcpStream(){
-    // read
+impl<'a> SmolTcpStream<'a> {
+    // imp. read
     // call can_recv
     // call recv on up to the size of the buffer + load it
     // return recv's f
@@ -58,5 +62,5 @@ impl SmolTcpStream(){
     // use try_from on all of the contained elements?
     // more doc reading necessary
    
-    
+    // from
 }
