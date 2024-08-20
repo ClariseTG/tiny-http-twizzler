@@ -2,7 +2,9 @@ use std::{
     net::{Shutdown, SocketAddr, ToSocketAddrs},
     path::PathBuf,
 };
-use smoltcp::socket::TcpSocket;
+use smoltcp::socket::{TcpSocket};
+pub type SocketBuffer<'a> = smoltcp::storage::RingBuffer<'a, u8>;
+
 
 // a variant of std's tcplistener using smoltcp's api
 pub struct SmolTcpListener<'a> {
@@ -12,6 +14,45 @@ pub struct SmolTcpListener<'a> {
 }
 
 impl<'a> SmolTcpListener<'a> {
+    /* bind
+    * accepts: address(es) 
+    * returns: a tcpsocket
+    * creates a tcpsocket and binds the address to that socket. 
+    * if multiple addresses given, it will attempt to bind to each until successful
+    */
+    // fn each_addr<A: ToSocketAddrs, F, T>(addr: A, mut f: F) -> io::Result<T>
+    // where
+    //     F: FnMut(io::Result<&SocketAddr>) -> io::Result<T>,
+    // {
+    //     let addrs = match addr.to_socket_addrs() {
+    //         Ok(addrs) => addrs,
+    //         Err(e) => return f(Err(e)),
+    //     };
+    //     let mut last_err = None;
+    //     for addr in addrs {
+    //         match f(Ok(&addr)) {
+    //             Ok(l) => return Ok(l),
+    //             Err(e) => last_err = Some(e),
+    //         }
+    //     }
+    //     Err(last_err.unwrap_or_else(|| {
+    //         io::const_io_error!(ErrorKind::InvalidInput, "could not resolve to any addresses")
+    //     }))
+    // }
+    pub fn bind(addr: &ToSocketAddrs) -> SmolTcpListener<'a> {
+      // trial socket
+      let addrs = match addr.to_socket_addrs() {
+        Ok(addrs) => addrs,
+        Err(e) => return f(Err(e)),
+      };
+      let rx_buffer = SocketBuffer::new(vec![0; 64]);
+      let tx_buffer = SocketBuffer::new(vec![0; 64]);
+      let mut socket = TcpSocket::new(rx_buffer, tx_buffer);
+      // what should be passed into listen() ?
+      socket.listen(addr);
+      socket
+    }
+
     // from
     // listener creates a smoltcp::socket, then calls listen() on it
     
@@ -25,7 +66,7 @@ impl<'a> SmolTcpListener<'a> {
     // transfer ownership of the socket from the listener to the stream object
     // return the stream object  
 
-    // bind (?)
+    // try_clone
 }
 
 pub struct SmolTcpStream<'a> {
@@ -51,6 +92,7 @@ impl<'a> SmolTcpStream<'a> {
     // peer_addr
     // remote_endpoint...?
     // TODO: what in the WORLD is a peer address i still haven't found the answer
+    // ^^ it's the ip address of the router i think
  
     // shutdown
     // specifies shutdown of read, write, or both with an enum.
@@ -63,4 +105,9 @@ impl<'a> SmolTcpStream<'a> {
     // more doc reading necessary
    
     // from
+
+    // connect
+    // TODO: research what is a RefinedTcpStrema?
+
+
 }
