@@ -33,7 +33,7 @@ pub struct SmolTcpStream {
     socket: TcpSocket,
     }
 
-impl SmolTcpStream(){
+impl SmolTcpStream {
     // read
     // call can_recv
     // call recv on up to the size of the buffer + load it
