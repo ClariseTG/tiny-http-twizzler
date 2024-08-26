@@ -2,13 +2,13 @@ use std::{
     net::{Shutdown, SocketAddr, ToSocketAddrs},
     path::PathBuf,
 };
-use smoltcp::socket::{TcpSocket};
+use smoltcp::socket::tcp::{Socket, ListenError, ConnectError};
+use smoltcp::wire::IpListenEndpoint;
 pub type SocketBuffer<'a> = smoltcp::storage::RingBuffer<'a, u8>;
-
 
 // a variant of std's tcplistener using smoltcp's api
 pub struct SmolTcpListener<'a> {
-    socket: TcpSocket<'a>
+    socket: Socket<'a>
     // NOTE: the name of this type CHANGES between 0.8.2 (the version forked into
     //      Twizzler) and 0.11 (the default that docs.rs shows)⚠️
 }
@@ -20,58 +20,73 @@ impl<'a> SmolTcpListener<'a> {
     * creates a tcpsocket and binds the address to that socket. 
     * if multiple addresses given, it will attempt to bind to each until successful
     */
-    // fn each_addr<A: ToSocketAddrs, F, T>(addr: A, mut f: F) -> io::Result<T>
-    // where
-    //     F: FnMut(io::Result<&SocketAddr>) -> io::Result<T>,
-    // {
-    //     let addrs = match addr.to_socket_addrs() {
-    //         Ok(addrs) => addrs,
-    //         Err(e) => return f(Err(e)),
-    //     };
-    //     let mut last_err = None;
-    //     for addr in addrs {
-    //         match f(Ok(&addr)) {
-    //             Ok(l) => return Ok(l),
-    //             Err(e) => last_err = Some(e),
-    //         }
-    //     }
-    //     Err(last_err.unwrap_or_else(|| {
-    //         io::const_io_error!(ErrorKind::InvalidInput, "could not resolve to any addresses")
-    //     }))
-    // }
+    // each_addr() taken from the standard tcp implementation in Rust 
+    // found here: https://doc.rust-lang.org/src/std/net/mod.rs.html
+
+    fn each_addr<A: ToSocketAddrs, F, T>(addr: A, mut f: F) -> Result<T, ListenError>
+    where
+        F: FnMut(T) -> Result<(), ListenError>,
+    {
+        let addrs = match addr.to_socket_addrs() {
+            Ok(addrs) => addrs,
+            Err(e) => return f(Err(e)),
+        };
+        let mut last_err = None;
+        for addr in addrs {
+            match f(Ok(&addr)) {
+                Ok(l) => return Ok(l),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            println!("invalid input, could not resolve to any addresses")
+        }))
+    }
     pub fn bind(addr: &ToSocketAddrs) -> SmolTcpListener<'a> {
       // trial socket
-      let addrs = match addr.to_socket_addrs() {
-        Ok(addrs) => addrs,
-        Err(e) => return f(Err(e)),
-      };
+      // probably to change the buffers!!!!
       let rx_buffer = SocketBuffer::new(vec![0; 64]);
       let tx_buffer = SocketBuffer::new(vec![0; 64]);
-      let mut socket = TcpSocket::new(rx_buffer, tx_buffer);
-      // what should be passed into listen() ?
-      socket.listen(addr);
-      socket
+      let mut sock = Socket::new(rx_buffer, tx_buffer);
+      let mut stcp_listener = SmolTcpListener{sock};
+      Self::each_addr(addr, Socket::listen).map(); // what goes in map?
+      stcp_listener
     }
-
-    // from
-    // listener creates a smoltcp::socket, then calls listen() on it
     
     // local_addr
     // return socketaddr from local_endpoint (stcp sock)
+    pub fn local_addr(&self) -> IpListenEndpoint {
+        self.socket.local_endpoint
+    }
     
     // accept
     // create a smoltcpstream object
     // clone socket into the smoltcpstream
     // call connect() (i think?) on the copied socket to change it to stream state
     // transfer ownership of the socket from the listener to the stream object
-    // return the stream object  
+    // return the stream object and socket address
+    pub fn accept(&self) -> Result<(SmolTcpStream, IpListenEndpoint), ConnectError> {
+        // clone the listener
+        let mut clone = duplicate();
+        let mut stream = SmolTcpStream {clone};
+        clone.connect();
+        (stream, self.local_addr())
+    }
+
 
     // try_clone
+    // smoltcp has no direct way to do this
+    pub fn try_clone() {
+        duplicate()
+    }
+
+    // duplicate
+    fn duplicate() {}
 }
 
 pub struct SmolTcpStream<'a> {
     // tcpsocket (copy of the one in listener)
-    socket: TcpSocket<'a>
+    socket: Socket<'a>
 }
 
 impl<'a> SmolTcpStream<'a> {
