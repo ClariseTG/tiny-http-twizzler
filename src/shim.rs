@@ -1,18 +1,32 @@
-extern crate smoltcp;
-
 use std::{
     net::{Shutdown, SocketAddr, ToSocketAddrs},
     path::PathBuf,
 };
-
-use smoltcp::socket::TcpSocket;
+use smoltcp::{
+    socket::{
+        WakerRegistration,
+        tcp{Socket, ListenError, ConnectError},
+    },
+    wire::{IpListenEndpoint, IpEndpoint},
+    storage::{Assembler, RingBuffer},
+};
 // NOTE: the name of this type CHANGES between 0.8.2 (the version forked into
 //      Twizzler) and 0.11 (the default that docs.rs shows)⚠️
+
+// TODO -------------------------------------------
+// - bind function
+// - write test script that checks that bind just creates a tcpsocket
+// ------------------------------------------------
 
 // a variant of std's tcplistener using smoltcp's api
 pub struct SmolTcpListener {
     socket: TcpSocket,
     }
+
+pub fn bind<A: ToSocketAddrs>(addr: A)-> Result<SmolTcpLister>{
+    // takes an address and creates a listener
+    // basically the new() function
+}
 
 impl SmolTcpListener {
     // from
@@ -32,6 +46,19 @@ impl SmolTcpListener {
 pub struct SmolTcpStream {
     socket: TcpSocket,
     }
+
+impl Read for &SmolTcpStream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    // check if the socket can even recieve
+    if may_recv(&self) {
+        println!("Can recieve!");
+        // call recv on up to the size of the buffer + load it
+        // return recv's f
+    } else {
+        println!("Cannot recieve :(");
+    }
+    }
+}
 
 impl SmolTcpStream {
     // read
