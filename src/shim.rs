@@ -1,34 +1,86 @@
 use std::{
     net::{Shutdown, SocketAddr, ToSocketAddrs},
     path::PathBuf,
+    io::{self, Read, Write},
 };
 use smoltcp::{
     socket::{
-        WakerRegistration,
-        tcp{Socket, ListenError, ConnectError},
+        tcp::{Socket, ListenError, ConnectError},
     },
     wire::{IpListenEndpoint, IpEndpoint},
     storage::{Assembler, RingBuffer},
 };
+use managed::ManagedSlice;
 // NOTE: the name of this type CHANGES between 0.8.2 (the version forked into
 //      Twizzler) and 0.11 (the default that docs.rs shows)⚠️
 
 // TODO -------------------------------------------
 // - bind function
 // - write test script that checks that bind just creates a tcpsocket
+// - test script that checks the remote endpoint works
 // ------------------------------------------------
 
-// a variant of std's tcplistener using smoltcp's api
-pub struct SmolTcpListener {
-    socket: TcpSocket,
-    }
+// TODO
+// global struct containing all of the actual sockets
 
-pub fn bind<A: ToSocketAddrs>(addr: A)-> Result<SmolTcpLister>{
-    // takes an address and creates a listener
-    // basically the new() function
+
+// a variant of std's tcplistener using smoltcp's api
+pub struct SmolTcpListener<'a> {
+    socket_handle: usize,
+    // one more thing...?
 }
 
-impl SmolTcpListener {
+pub fn bind<A: ToSocketAddrs>(addr: A)-> Result<SmolTcpListener<'a>{
+    // takes an address and creates a listener
+    // address is the "remote endpoint"
+    // basically the new() function
+   
+    // questions to research:
+    // - should this fn initialize the socket array if it doesn't exist? or should that go
+    //      elsewhere?
+    // - what type goes in the rx/tx buffers?
+
+    // notes 09-06-24
+    // smoltcp doesnt do stuff on its own
+    // we need to use a loop to make it do stuff on its own
+    // "poll" function is the driver
+    //      -> runs whenever something changes (such as send_slice modifying state machine)
+    //      -> if there is work to do it will do work
+    //      -> uses states to figure out if something needs to be done
+    //      -> native fn to smoltcp
+    //      -> poll is called on an interface
+    //      CONCLUSION: poll is like the execute() that i had in http130
+    //
+    // standard read/write will block until there is data and then return it
+    // sockets can be referred to by handles, which are MUCH easier to pass around
+    // the sockets themselves are locked and hard to move. but you can
+    //      index into them with easy to move names! yippee
+    // no lifetime information either if its just a usize inside
+    //
+    // make the Vec::new()s sized (daniel wrote it as a todo in the ex.)
+    // bind might have a .select_device() eventually in twz to support
+    //      hetero hardware/privacy
+    // "for now, no need to worry about the ip address" - daniel
+
+    // TODO: what does this vector hold??
+    let rcv_buf = Vec::with_capacity(4);
+    let trs_buf = Vec::with_capacity(4);
+    let rx_buffer = RingBuffer::from(ManagedSlice::Owned(rcv_buf));
+    let tx_buffer = RingBuffer::from(ManagedSlice::Owned(trs_buf));
+
+    let socket = Socket::new(rx_buffer, tx_buffer);
+    // place socket into socket array
+
+    // extract the socket handle
+
+    // put socket handle into SmolTcpListener
+    let listener = SmolTcpListener;
+
+    // return:
+    Ok(listener)
+}
+
+impl<'a> SmolTcpListener<'a> {
     // from
     // listener creates a smoltcp::socket, then calls listen() on it
     
@@ -43,24 +95,24 @@ impl SmolTcpListener {
     // return the stream object  
 }
 
-pub struct SmolTcpStream {
-    socket: TcpSocket,
+pub struct SmolTcpStream<'a> {
+    socket: Socket<'a>,
     }
 
-impl Read for &SmolTcpStream {
+impl<'a> Read for &SmolTcpStream<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
     // check if the socket can even recieve
-    if may_recv(&self) {
-        println!("Can recieve!");
+    //if may_recv(&self) {
+    //    println!("Can recieve!");
         // call recv on up to the size of the buffer + load it
         // return recv's f
-    } else {
-        println!("Cannot recieve :(");
-    }
+    //} else {
+    //    println!("Cannot recieve :(");
+    //}
     }
 }
 
-impl SmolTcpStream {
+impl<'a> SmolTcpStream<'a> {
     // read
     // call can_recv
     // call recv on up to the size of the buffer + load it
@@ -90,4 +142,14 @@ impl SmolTcpStream {
     // more doc reading necessary
    
     
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn makes_socket(){
+        
+    }
 }
