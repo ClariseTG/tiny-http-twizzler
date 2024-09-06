@@ -9,6 +9,7 @@ use smoltcp::{
     },
     wire::{IpListenEndpoint, IpEndpoint},
     storage::{Assembler, RingBuffer},
+    iface::{SocketSet},
 };
 use managed::ManagedSlice;
 // NOTE: the name of this type CHANGES between 0.8.2 (the version forked into
@@ -28,6 +29,11 @@ use managed::ManagedSlice;
 pub struct SmolTcpListener<'a> {
     socket_handle: usize,
     // one more thing...?
+}
+
+pub fn init() {
+    // TODO
+    let ??? = SocketSet::new(Vec::new());
 }
 
 pub fn bind<A: ToSocketAddrs>(addr: A)-> Result<SmolTcpListener<'a>{
@@ -95,8 +101,8 @@ impl<'a> SmolTcpListener<'a> {
     // return the stream object  
 }
 
-pub struct SmolTcpStream<'a> {
-    socket: Socket<'a>,
+pub struct SmolTcpStream {
+    socket_handle: usize,
     }
 
 impl<'a> Read for &SmolTcpStream<'a> {
