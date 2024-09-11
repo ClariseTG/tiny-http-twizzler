@@ -21,18 +21,17 @@ use managed::ManagedSlice;
 // - test script that checks the remote endpoint works
 // ------------------------------------------------
 
-// TODO
-// global struct containing all of the actual sockets
-static socket_set: Mutex<SocketSet>;
 
 // a variant of std's tcplistener using smoltcp's api
-pub struct SmolTcpListener<'a> {
+pub struct SmolTcpListener {
     socket_handle: usize,
     // one more thing...?
 }
 
 pub fn init() {
     // TODO
+    // global struct containing all of the actual sockets
+    static socket_set: Mutex<SocketSet>;
     // heap var with a pointer that everybody knows?
     // the socket SET isnt owned, so there's a mutex on it
     socket_set = SocketSet::new(Vec::new());
@@ -108,7 +107,8 @@ impl<'a> SmolTcpListener<'a> {
 
 pub struct SmolTcpStream {
     socket_handle: usize,
-    }
+    // ???
+}
 
 impl<'a> Read for &SmolTcpStream<'a> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
