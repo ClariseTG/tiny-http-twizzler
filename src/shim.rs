@@ -7,6 +7,7 @@
 // can bind be called with the same address? probably. try it.
 
 use std::{
+    sync::{Arc, Condvar, Mutex},
     net::{Shutdown, SocketAddr, ToSocketAddrs, IpAddr, Ipv4Addr},
     path::PathBuf,
 };
@@ -18,13 +19,13 @@ use smoltcp::{
     phy::{Loopback, Medium},
     wire::{IpListenEndpoint, IpEndpoint, EthernetAddress, IpAddress},
     storage::{Assembler, RingBuffer},
-    iface::{Config, Interface}
+    iface::{Config, Interface, SocketHandle, SocketSet}
 };
 pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
 // a variant of std's tcplistener using smoltcp's api
 pub struct SmolTcpListener<'a> {
     local_addr: SocketAddr, // maybe needed. maybe not. take out afterwards
-    socket: Socket<'a>
+    socket_handle: usize,
 }
 
 impl<'a> SmolTcpListener<'a> {
@@ -58,16 +59,16 @@ impl<'a> SmolTcpListener<'a> {
     // each_addr
     // verifies each address before calling the provided function
     // returns nothing, or error
-    fn each_addr<A: ToSocketAddrs, F>(addr: A, mut f: F, mut S: &SmolTcpListener<'a>) -> Result<(), ListenError>
-    where
-        F: FnMut(dyn Into<IpListenEndpoint>) -> Result<(), ListenError>, {
-            let addrs = match addr.to_socket_addrs() {
-                Ok(addrs) => addrs,
-                Err() => return ListenError::Unaddressable,
-            };
-            // include error handling for comparison of last error
+    // fn each_addr<A: ToSocketAddrs, F>(addr: A, mut f: F, mut S: &SmolTcpListener<'a>) -> Result<(), ListenError>
+    // where
+    //     F: FnMut(dyn Into<IpListenEndpoint>) -> Result<(), ListenError>, {
+    //         let addrs = match addr.to_socket_addrs() {
+    //             Ok(addrs) => addrs,
+    //             Err() => return ListenError::Unaddressable,
+    //         };
+    //         // include error handling for comparison of last error
 
-    }
+    // }
 
     /* bind
     * accepts: address(es) 
