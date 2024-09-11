@@ -23,7 +23,7 @@ use managed::ManagedSlice;
 
 // TODO
 // global struct containing all of the actual sockets
-
+static socket_set: Mutex<SocketSet>;
 
 // a variant of std's tcplistener using smoltcp's api
 pub struct SmolTcpListener<'a> {
@@ -33,7 +33,9 @@ pub struct SmolTcpListener<'a> {
 
 pub fn init() {
     // TODO
-    let ??? = SocketSet::new(Vec::new());
+    // heap var with a pointer that everybody knows?
+    // the socket SET isnt owned, so there's a mutex on it
+    socket_set = SocketSet::new(Vec::new());
 }
 
 pub fn bind<A: ToSocketAddrs>(addr: A)-> Result<SmolTcpListener<'a>{
@@ -45,6 +47,8 @@ pub fn bind<A: ToSocketAddrs>(addr: A)-> Result<SmolTcpListener<'a>{
     // - should this fn initialize the socket array if it doesn't exist? or should that go
     //      elsewhere?
     // - what type goes in the rx/tx buffers?
+    // - global variables?
+    //
 
     // notes 09-06-24
     // smoltcp doesnt do stuff on its own
@@ -75,12 +79,13 @@ pub fn bind<A: ToSocketAddrs>(addr: A)-> Result<SmolTcpListener<'a>{
     let tx_buffer = RingBuffer::from(ManagedSlice::Owned(trs_buf));
 
     let socket = Socket::new(rx_buffer, tx_buffer);
-    // place socket into socket array
-
-    // extract the socket handle
-
+    // place socket into socket array + extract the socket handle
+    let socket_id = socket_set.add(socket);
+        
     // put socket handle into SmolTcpListener
-    let listener = SmolTcpListener;
+    let listener = SmolTcpListener {
+        socket_handle: socket_id,
+    };
 
     // return:
     Ok(listener)
