@@ -1,7 +1,8 @@
 use std::{
     net::{Shutdown, SocketAddr, ToSocketAddrs},
     path::PathBuf,
-    io::{self, Read, Write},
+    io::{self, Read, Write, Error},
+    sync::Mutex,
 };
 use smoltcp::{
     socket::{
@@ -31,13 +32,13 @@ pub struct SmolTcpListener {
 pub fn init() {
     // TODO
     // global struct containing all of the actual sockets
-    static socket_set: Mutex<SocketSet>;
+    let static mut socket_set: Mutex<SocketSet<'static>>;
     // heap var with a pointer that everybody knows?
     // the socket SET isnt owned, so there's a mutex on it
     socket_set = SocketSet::new(Vec::new());
 }
 
-pub fn bind<A: ToSocketAddrs>(addr: A)-> Result<SmolTcpListener<'a>{
+pub fn bind<A: ToSocketAddrs>(addr: A)-> Result<SmolTcpListener, Error> {
     // takes an address and creates a listener
     // address is the "remote endpoint"
     // basically the new() function
@@ -90,7 +91,7 @@ pub fn bind<A: ToSocketAddrs>(addr: A)-> Result<SmolTcpListener<'a>{
     Ok(listener)
 }
 
-impl<'a> SmolTcpListener<'a> {
+impl SmolTcpListener {
     // from
     // listener creates a smoltcp::socket, then calls listen() on it
     
@@ -110,7 +111,7 @@ pub struct SmolTcpStream {
     // ???
 }
 
-impl<'a> Read for &SmolTcpStream<'a> {
+impl Read for &SmolTcpStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
     // check if the socket can even recieve
     //if may_recv(&self) {
@@ -123,7 +124,7 @@ impl<'a> Read for &SmolTcpStream<'a> {
     }
 }
 
-impl<'a> SmolTcpStream<'a> {
+impl SmolTcpStream {
     // read
     // call can_recv
     // call recv on up to the size of the buffer + load it
