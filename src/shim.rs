@@ -10,6 +10,7 @@ use std::{
     sync::{Arc, Condvar, Mutex},
     net::{Shutdown, SocketAddr, ToSocketAddrs, IpAddr, Ipv4Addr},
     path::PathBuf,
+    io::Error,
 };
 use smoltcp::{
     socket::{ 
@@ -40,7 +41,7 @@ impl Engine {
             condvar: Arc::new(Condvar::new()),
         }
     }
-    fn add_socket(&mut self, socket: Socket<'static>) -> SocketHandle {
+    fn add_socket(&self, socket: Socket<'static>) -> SocketHandle {
         self.core.lock().unwrap().add_socket(socket)
     }
     // fns to get sockets
@@ -95,23 +96,24 @@ impl SmolTcpListener {
     * creates a tcpsocket and binds the address to that socket. 
     * if multiple addresses given, it will attempt to bind to each until successful
     */
-    pub fn bind(addr: &dyn ToSocketAddrs<Iter=SocketAddr>) -> SmolTcpListener {
+    pub fn bind<A: ToSocketAddrs>(addr: A) -> Result<SmolTcpListener, Error> {
       /*
       passed to bind: 
       "127.0.0.1:0"
       SocketAddr::from(([127, 0, 0, 1], 443))
       let addrs = [ SocketAddr::from(([127, 0, 0, 1], 80)),  SocketAddr::from(([127, 0, 0, 1], 443)), ];
       */
+
       // FIX ARG TO check_socketset_conditions!!!!!!!!!!!!!!!!!!
-      let mut engine = Self::check_socketset_conditions(None);
+      let engine = Self::check_socketset_conditions(None);
 
       let rx_buffer = SocketBuffer::new(vec![0; 64]);
       let tx_buffer = SocketBuffer::new(vec![0; 64]);
       let mut sock = Socket::new(rx_buffer, tx_buffer);
-      sock.listen(1234); // change later
+      let _ = sock.listen(1234); // change later
       let handle = engine.add_socket(sock);
       let tcp = SmolTcpListener { socket_handle: handle };
-      tcp
+      Ok(tcp)
     }
 
 }
@@ -159,7 +161,12 @@ impl SmolTcpStream {
 
 }
 
-#[test]
-fn main() {
-
+#[cfg(test)]
+mod tests {
+    use crate::shim::SmolTcpListener;
+    use std::net::SocketAddr;
+    #[test]
+    fn make_listener() {
+        let _listener = SmolTcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 443))).unwrap();
+    }
 }
