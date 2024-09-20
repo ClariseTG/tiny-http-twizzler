@@ -90,13 +90,31 @@ impl SmolTcpListener {
             // what about init field in core?
         }
     }
+
+    // each_addr
+    fn each_addr<A: ToSocketAddrs>(sock_addrs: A, s: &mut Socket<'static>) -> Result<(), ListenError> {
+        let addrs = {
+            match sock_addrs.to_socket_addrs() {
+                Ok(addrs) => addrs, 
+                Err(e) => return Err(ListenError::InvalidState),
+            }
+        };
+        for addr in addrs {
+            match (*s).listen(addr.port()) {
+                Ok(_) => return Ok(()),
+                Err(e) => return Err(ListenError::Unaddressable),
+            }
+        }
+        Err(ListenError::InvalidState) // is that the correct thing to return?
+    }
     /* bind
     * accepts: address(es) 
     * returns: a tcpsocket
     * creates a tcpsocket and binds the address to that socket. 
     * if multiple addresses given, it will attempt to bind to each until successful
     */
-    pub fn bind<A: ToSocketAddrs>(addr: A) -> Result<SmolTcpListener, Error> {
+    pub fn bind<A: ToSocketAddrs>(addrs: A) -> Result<SmolTcpListener, ListenError> {
+        // is the return value of ListenError correct?
       /*
       passed to bind: 
       "127.0.0.1:0"
@@ -107,10 +125,13 @@ impl SmolTcpListener {
       // FIX ARG TO check_socketset_conditions!!!!!!!!!!!!!!!!!!
       let engine = Self::check_socketset_conditions(None);
 
-      let rx_buffer = SocketBuffer::new(vec![0; 64]);
-      let tx_buffer = SocketBuffer::new(vec![0; 64]);
+      let rx_buffer = SocketBuffer::new(Vec::new());
+      let tx_buffer = SocketBuffer::new(Vec::new());
       let mut sock = Socket::new(rx_buffer, tx_buffer);
-      let _ = sock.listen(1234); // change later
+      if let Err(e) = Self::each_addr(addrs, &mut sock) {
+        return Err(e);
+      }
+    //   let _ = sock.listen(addrs.port()); // change later
       let handle = engine.add_socket(sock);
       let tcp = SmolTcpListener { socket_handle: handle };
       Ok(tcp)
