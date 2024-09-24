@@ -31,6 +31,8 @@ pub struct Engine {
 
 struct Core {
     socketset: SocketSet<'static>,
+    iface: Interface,
+    device: Loopback, // for now.
     // init: bool,
 }
 
@@ -44,20 +46,40 @@ impl Engine {
     fn add_socket(&self, socket: Socket<'static>) -> SocketHandle {
         self.core.lock().unwrap().add_socket(socket)
     }
+    // fn get_mutable_socket(&self, handle: SocketHandle) -> &mut Socket<'static> {
+    //     self.core.lock().unwrap().get_mutable_socket(handle)
+    // }
+
+    // check_socketset_conditions
+    // checks whether socket set exists. else makes a new one
+    fn check_socketset_conditions(pointer: Option<Arc<Engine>>) -> Arc<Engine> {
+        match pointer {
+            Some(e) => e,
+            None => {
+                let e = Arc::new(Self::new());
+                e
+            }
+            // what about init field in core?
+        }
+    }
     // fns to get sockets
     fn block(){}
 }
 
 impl Core {
     fn new() -> Self {
-        let mut core = Self {
-            socketset: SocketSet::new(Vec::new()),
+        let config = Config::new(EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).into()); // change later!
+        let mut socketset = SocketSet::new(Vec::new());
+        let mut device = Loopback::new(Medium::Ethernet);
+        let mut iface = Interface::new(config, &mut device, Instant::now());
+        Self {
+            socketset: socketset,
+            device: device,
+            iface: iface,
             // init: false,
-        };
+        }
         // create a new thread and poll
-        // todo!();
         // core.init = true;
-        core
     }
     fn add_socket(&mut self, sock: Socket<'static>) -> SocketHandle {
         self.socketset.add(sock)
@@ -68,29 +90,21 @@ impl Core {
     fn get_mutable_socket(&mut self, handle: SocketHandle) -> &mut Socket<'static> {
         self.socketset.get_mut(handle)
     }
-    fn poll() {}
+    fn poll(&mut self, waiter: &Condvar) -> bool {
+        let res = self.iface.poll(Instant::now(), &mut self.device, &mut self.sockets);
+        waiter.notify_all();
+        res
+    }
 }
 
 // a variant of std's tcplistener using smoltcp's api
 pub struct SmolTcpListener {
     // local_addr: SocketAddr, // maybe needed. maybe not. take out afterwards
     socket_handle: SocketHandle,
+    // engine_ptr: &Engine,
 }
 
 impl SmolTcpListener {
-    // check_socketset_conditions
-    // checks whether socket set exists. else makes a new one
-    fn check_socketset_conditions(pointer: Option<Arc<Engine>>) -> Arc<Engine> {
-        match pointer {
-            Some(e) => e,
-            None => {
-                let e = Arc::new(Engine::new());
-                e
-            }
-            // what about init field in core?
-        }
-    }
-
     // each_addr
     fn each_addr<A: ToSocketAddrs>(sock_addrs: A, s: &mut Socket<'static>) -> Result<(), ListenError> {
         let addrs = {
@@ -102,7 +116,7 @@ impl SmolTcpListener {
         for addr in addrs {
             match (*s).listen(addr.port()) {
                 Ok(_) => return Ok(()),
-                Err(e) => return Err(ListenError::Unaddressable),
+                Err(_) => return Err(ListenError::Unaddressable),
             }
         }
         Err(ListenError::InvalidState) // is that the correct thing to return?
@@ -113,35 +127,43 @@ impl SmolTcpListener {
     * creates a tcpsocket and binds the address to that socket. 
     * if multiple addresses given, it will attempt to bind to each until successful
     */
+    /*
+        example arguments passed to bind: 
+        "127.0.0.1:0"
+        SocketAddr::from(([127, 0, 0, 1], 443))
+        let addrs = [ SocketAddr::from(([127, 0, 0, 1], 80)),  SocketAddr::from(([127, 0, 0, 1], 443)), ];
+    */
     pub fn bind<A: ToSocketAddrs>(addrs: A) -> Result<SmolTcpListener, ListenError> {
-        // is the return value of ListenError correct?
-      /*
-      passed to bind: 
-      "127.0.0.1:0"
-      SocketAddr::from(([127, 0, 0, 1], 443))
-      let addrs = [ SocketAddr::from(([127, 0, 0, 1], 80)),  SocketAddr::from(([127, 0, 0, 1], 443)), ];
-      */
+        // return value ListenError?
 
-      // FIX ARG TO check_socketset_conditions!!!!!!!!!!!!!!!!!!
-      let engine = Self::check_socketset_conditions(None);
+        // we need another strategy for this engine business.
+        let engine = Engine::check_socketset_conditions(None);
 
-      let rx_buffer = SocketBuffer::new(Vec::new());
-      let tx_buffer = SocketBuffer::new(Vec::new());
-      let mut sock = Socket::new(rx_buffer, tx_buffer);
-      if let Err(e) = Self::each_addr(addrs, &mut sock) {
-        return Err(e);
-      }
-    //   let _ = sock.listen(addrs.port()); // change later
-      let handle = engine.add_socket(sock);
-      let tcp = SmolTcpListener { socket_handle: handle };
-      Ok(tcp)
+        let rx_buffer = SocketBuffer::new(Vec::new());
+        let tx_buffer = SocketBuffer::new(Vec::new());
+        let mut sock = Socket::new(rx_buffer, tx_buffer);
+        if let Err(e) = Self::each_addr(addrs, &mut sock) {
+            return Err(e);
+        }
+        let handle = engine.add_socket(sock);
+        let tcp = SmolTcpListener { socket_handle: handle };
+        Ok(tcp)
     }
 
+    pub fn accept(&self) -> Result<SmolTcpStream, ConnectError> {
+        // figure out engine stuff later.
+        let engine = Engine::check_socketset_conditions(None);
+        let mut core = engine.core.lock().unwrap();
+        let socket = core.get_mutable_socket(self.socket_handle);
+        // let _ = socket.connect(core.iface.context(), (ip, destport), local_port).unwrap();
+        let stream = SmolTcpStream { socket_handle: self.socket_handle };
+        Ok(stream)
+    }
 }
 
 pub struct SmolTcpStream {
     // tcpsocket (copy of the one in listener)
-    socket_handle: usize
+    socket_handle: SocketHandle
 }
 
 impl SmolTcpStream {
@@ -191,3 +213,6 @@ mod tests {
         let _listener = SmolTcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 443))).unwrap();
     }
 }
+/*
+
+*/
