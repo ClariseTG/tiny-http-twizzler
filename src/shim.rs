@@ -6,11 +6,13 @@
 // use socket handles!! use a stack to use sockets!! 
 // can bind be called with the same address? probably. try it.
 
+use lazy_static::lazy_static;
 use std::{
     sync::{Arc, Condvar, Mutex},
     net::{Shutdown, SocketAddr, ToSocketAddrs, IpAddr, Ipv4Addr},
     path::PathBuf,
     io::Error,
+    borrow::Cow,
 };
 use smoltcp::{
     socket::{ 
@@ -33,7 +35,10 @@ struct Core {
     socketset: SocketSet<'static>,
     iface: Interface,
     device: Loopback, // for now.
-    // init: bool,
+}
+
+lazy_static! {
+    static ref ENGINE: Arc<Engine> = Arc::new(Engine::new());
 }
 
 impl Engine {
@@ -46,9 +51,11 @@ impl Engine {
     fn add_socket(&self, socket: Socket<'static>) -> SocketHandle {
         self.core.lock().unwrap().add_socket(socket)
     }
-    // fn get_mutable_socket(&self, handle: SocketHandle) -> &mut Socket<'static> {
-    //     self.core.lock().unwrap().get_mutable_socket(handle)
-    // }
+    // returned &mut Socket<'static>
+    fn get_mutable_socket(&self, handle: SocketHandle) -> &mut Socket<'static> {
+        let mut core = Box::new(self.core.lock().unwrap());
+        *core.get_mutable_socket(handle)
+    }
 
     // check_socketset_conditions
     // checks whether socket set exists. else makes a new one
@@ -59,7 +66,6 @@ impl Engine {
                 let e = Arc::new(Self::new());
                 e
             }
-            // what about init field in core?
         }
     }
     // fns to get sockets
@@ -76,10 +82,7 @@ impl Core {
             socketset: socketset,
             device: device,
             iface: iface,
-            // init: false,
         }
-        // create a new thread and poll
-        // core.init = true;
     }
     fn add_socket(&mut self, sock: Socket<'static>) -> SocketHandle {
         self.socketset.add(sock)
@@ -91,9 +94,7 @@ impl Core {
         self.socketset.get_mut(handle)
     }
     fn poll(&mut self, waiter: &Condvar) -> bool {
-        let res = self.iface.poll(Instant::now(), &mut self.device, &mut self.sockets);
-        waiter.notify_all();
-        res
+        todo!();
     }
 }
 
@@ -136,8 +137,7 @@ impl SmolTcpListener {
     pub fn bind<A: ToSocketAddrs>(addrs: A) -> Result<SmolTcpListener, ListenError> {
         // return value ListenError?
 
-        // we need another strategy for this engine business.
-        let engine = Engine::check_socketset_conditions(None);
+        let engine = &ENGINE;
 
         let rx_buffer = SocketBuffer::new(Vec::new());
         let tx_buffer = SocketBuffer::new(Vec::new());
@@ -145,15 +145,17 @@ impl SmolTcpListener {
         if let Err(e) = Self::each_addr(addrs, &mut sock) {
             return Err(e);
         }
-        let handle = engine.add_socket(sock);
+        let handle = (*engine).add_socket(sock);
         let tcp = SmolTcpListener { socket_handle: handle };
         Ok(tcp)
     }
 
+    // accept
+    // get socket from the socket set and connect()
+    // create tcpstream and return tcpstream
     pub fn accept(&self) -> Result<SmolTcpStream, ConnectError> {
-        // figure out engine stuff later.
-        let engine = Engine::check_socketset_conditions(None);
-        let mut core = engine.core.lock().unwrap();
+        let engine = &ENGINE;
+        let mut core = (*engine).core.lock().unwrap();
         let socket = core.get_mutable_socket(self.socket_handle);
         // let _ = socket.connect(core.iface.context(), (ip, destport), local_port).unwrap();
         let stream = SmolTcpStream { socket_handle: self.socket_handle };
@@ -204,6 +206,12 @@ impl SmolTcpStream {
 
 }
 
+
+/*
+tests:
+make_listener:
+
+*/
 #[cfg(test)]
 mod tests {
     use crate::shim::SmolTcpListener;
@@ -213,6 +221,3 @@ mod tests {
         let _listener = SmolTcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 443))).unwrap();
     }
 }
-/*
-
-*/
