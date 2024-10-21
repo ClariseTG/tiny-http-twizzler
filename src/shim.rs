@@ -1,10 +1,5 @@
 // NOTES
-// poll() is the driving feature that drives all state machines forward. poll = try to move forward in work. call in a loop on a separate thread.
-// why does daniel use loopback device? other examples use other ones. possibly because we are currently only focused on working with a local host loopback device. later, we can try working with other ones.
-// what is the point of the stack/blocking. it allows us to synchronize the use of sockets behind an interface that we create. using a stack also helps with lifetime issues. we only need to deal with integers as socket handles to access sockets in a set.
-// how do i find the sizes/actual numbers for everything? a later issue. don't worry about it.
-// use socket handles!! use a stack to use sockets!! 
-// can bind be called with the same address? probably. try it.
+// what ip/dest
 
 use lazy_static::lazy_static;
 use std::{
@@ -12,7 +7,6 @@ use std::{
     net::{Shutdown, SocketAddr, ToSocketAddrs, IpAddr, Ipv4Addr},
     path::PathBuf,
     io::Error,
-    borrow::Cow,
 };
 use smoltcp::{
     socket::{ 
@@ -20,7 +14,7 @@ use smoltcp::{
     },
     time::{Instant},
     phy::{Loopback, Medium},
-    wire::{IpListenEndpoint, IpEndpoint, EthernetAddress, IpAddress},
+    wire::{IpListenEndpoint, IpEndpoint, EthernetAddress, IpAddress, IpCidr},
     storage::{Assembler, RingBuffer},
     iface::{Config, Interface, SocketHandle, SocketSet}
 };
@@ -52,10 +46,10 @@ impl Engine {
         self.core.lock().unwrap().add_socket(socket)
     }
     // returned &mut Socket<'static>
-    fn get_mutable_socket(&self, handle: SocketHandle) -> &mut Socket<'static> {
-        let mut core = Box::new(self.core.lock().unwrap());
-        *core.get_mutable_socket(handle)
-    }
+    // fn get_mutable_socket(&self, handle: SocketHandle) -> &mut Socket<'static> {
+    //     let mut core = Box::new(self.core.lock().unwrap());
+    //     *core.get_mutable_socket(handle)
+    // }
 
     // check_socketset_conditions
     // checks whether socket set exists. else makes a new one
@@ -78,6 +72,11 @@ impl Core {
         let mut socketset = SocketSet::new(Vec::new());
         let mut device = Loopback::new(Medium::Ethernet);
         let mut iface = Interface::new(config, &mut device, Instant::now());
+        iface.update_ip_addrs(|ip_addrs| {
+            ip_addrs
+                .push(IpCidr::new(IpAddress::v4(127, 0, 0, 1), 8))
+                .unwrap();
+        });
         Self {
             socketset: socketset,
             device: device,
@@ -102,12 +101,13 @@ impl Core {
 pub struct SmolTcpListener {
     // local_addr: SocketAddr, // maybe needed. maybe not. take out afterwards
     socket_handle: SocketHandle,
+    port: u16,
     // engine_ptr: &Engine,
 }
 
 impl SmolTcpListener {
     // each_addr
-    fn each_addr<A: ToSocketAddrs>(sock_addrs: A, s: &mut Socket<'static>) -> Result<(), ListenError> {
+    fn each_addr<A: ToSocketAddrs>(sock_addrs: A, s: &mut Socket<'static>) -> Result<u16, ListenError> {
         let addrs = {
             match sock_addrs.to_socket_addrs() {
                 Ok(addrs) => addrs, 
@@ -116,7 +116,9 @@ impl SmolTcpListener {
         };
         for addr in addrs {
             match (*s).listen(addr.port()) {
-                Ok(_) => return Ok(()),
+                Ok(_) => {
+                    return Ok(addr.port())
+                },
                 Err(_) => return Err(ListenError::Unaddressable),
             }
         }
@@ -142,24 +144,35 @@ impl SmolTcpListener {
         let rx_buffer = SocketBuffer::new(Vec::new());
         let tx_buffer = SocketBuffer::new(Vec::new());
         let mut sock = Socket::new(rx_buffer, tx_buffer);
-        if let Err(e) = Self::each_addr(addrs, &mut sock) {
-            return Err(e);
-        }
+        let mut port = {
+            match Self::each_addr(addrs, &mut sock) {
+                Ok(port) => port,
+                Err(e) => {
+                    return Err(e)
+                },
+            }
+        };
+        // if let Err(e) =  {
+        //     return Err(e);
+        // }
         let handle = (*engine).add_socket(sock);
-        let tcp = SmolTcpListener { socket_handle: handle };
+        let tcp = SmolTcpListener { socket_handle: handle, port: port};
         Ok(tcp)
     }
 
     // accept
     // get socket from the socket set and connect()
     // create tcpstream and return tcpstream
-    pub fn accept(&self) -> Result<SmolTcpStream, ConnectError> {
+    pub fn accept(&self) -> Result<(SmolTcpStream, SocketAddr), ConnectError> {
         let engine = &ENGINE;
         let mut core = (*engine).core.lock().unwrap();
+        let cx = core.iface.context();
+        let mut core = (*engine).core.lock().unwrap();
         let socket = core.get_mutable_socket(self.socket_handle);
-        // let _ = socket.connect(core.iface.context(), (ip, destport), local_port).unwrap();
+        let addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        let _ = socket.connect(cx, (addr, 1234), self.port).unwrap();
         let stream = SmolTcpStream { socket_handle: self.socket_handle };
-        Ok(stream)
+        Ok((stream, SocketAddr::new(addr, self.port)))
     }
 }
 
