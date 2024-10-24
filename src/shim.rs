@@ -99,7 +99,7 @@ impl Core {
 
 // a variant of std's tcplistener using smoltcp's api
 pub struct SmolTcpListener {
-    // local_addr: SocketAddr, // maybe needed. maybe not. take out afterwards
+    local_addr: SocketAddr,
     socket_handle: SocketHandle,
     port: u16,
     // engine_ptr: &Engine,
@@ -174,6 +174,8 @@ impl SmolTcpListener {
         let stream = SmolTcpStream { socket_handle: self.socket_handle };
         Ok((stream, SocketAddr::new(addr, self.port)))
     }
+
+    // local_addr()
 }
 
 pub struct SmolTcpStream {
