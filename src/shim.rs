@@ -45,11 +45,6 @@ impl Engine {
     fn add_socket(&self, socket: Socket<'static>) -> SocketHandle {
         self.core.lock().unwrap().add_socket(socket)
     }
-    // returned &mut Socket<'static>
-    // fn get_mutable_socket(&self, handle: SocketHandle) -> &mut Socket<'static> {
-    //     let mut core = Box::new(self.core.lock().unwrap());
-    //     *core.get_mutable_socket(handle)
-    // }
 
     // check_socketset_conditions
     // checks whether socket set exists. else makes a new one
@@ -102,12 +97,11 @@ pub struct SmolTcpListener {
     local_addr: SocketAddr,
     socket_handle: SocketHandle,
     port: u16,
-    // engine_ptr: &Engine,
 }
 
 impl SmolTcpListener {
     // each_addr
-    fn each_addr<A: ToSocketAddrs>(sock_addrs: A, s: &mut Socket<'static>) -> Result<u16, ListenError> {
+    fn each_addr<A: ToSocketAddrs>(sock_addrs: A, s: &mut Socket<'static>) -> Result<(u16, SocketAddr), ListenError> {
         let addrs = {
             match sock_addrs.to_socket_addrs() {
                 Ok(addrs) => addrs, 
@@ -117,7 +111,7 @@ impl SmolTcpListener {
         for addr in addrs {
             match (*s).listen(addr.port()) {
                 Ok(_) => {
-                    return Ok(addr.port())
+                    return Ok((addr.port(), addr))
                 },
                 Err(_) => return Err(ListenError::Unaddressable),
             }
@@ -136,34 +130,30 @@ impl SmolTcpListener {
         SocketAddr::from(([127, 0, 0, 1], 443))
         let addrs = [ SocketAddr::from(([127, 0, 0, 1], 80)),  SocketAddr::from(([127, 0, 0, 1], 443)), ];
     */
-    pub fn bind<A: ToSocketAddrs>(addrs: A) -> Result<SmolTcpListener, ListenError> {
-        // return value ListenError?
-
+    pub fn bind<A: ToSocketAddrs>(addrs: A) -> Result<SmolTcpListener, Error> {
         let engine = &ENGINE;
 
         let rx_buffer = SocketBuffer::new(Vec::new());
         let tx_buffer = SocketBuffer::new(Vec::new());
         let mut sock = Socket::new(rx_buffer, tx_buffer);
-        let mut port = {
+        let (port, local_address) = {
             match Self::each_addr(addrs, &mut sock) {
-                Ok(port) => port,
-                Err(e) => {
-                    return Err(e)
+                Ok((port, local_address)) => (port, local_address),
+                Err(_) => {
+                    return Err(Error::Other("listening error"))
                 },
             }
         };
-        // if let Err(e) =  {
-        //     return Err(e);
-        // }
+
         let handle = (*engine).add_socket(sock);
-        let tcp = SmolTcpListener { socket_handle: handle, port: port};
+        let tcp = SmolTcpListener { socket_handle: handle, port: port, local_addr: local_address};
         Ok(tcp)
     }
 
     // accept
     // get socket from the socket set and connect()
     // create tcpstream and return tcpstream
-    pub fn accept(&self) -> Result<(SmolTcpStream, SocketAddr), ConnectError> {
+    pub fn accept(&self) -> Result<(SmolTcpStream, SocketAddr), Error> {
         let engine = &ENGINE;
         let mut core = (*engine).core.lock().unwrap();
         let cx = core.iface.context();
@@ -173,9 +163,14 @@ impl SmolTcpListener {
         let _ = socket.connect(cx, (addr, 1234), self.port).unwrap();
         let stream = SmolTcpStream { socket_handle: self.socket_handle };
         Ok((stream, SocketAddr::new(addr, self.port)))
+        // add in support for errors!
     }
 
-    // local_addr()
+    pub fn local_addr(&self) -> Result<SocketAddr, Error> {
+        return Ok(self.local_addr);
+        // add in support for error!
+    }
+
 }
 
 pub struct SmolTcpStream {
@@ -214,6 +209,9 @@ impl SmolTcpStream {
     // more doc reading necessary
    
     // from
+    // shutdown
+    // peet_addr
+    // flush
 
     // connect
     // TODO: research what is a RefinedTcpStrema?
