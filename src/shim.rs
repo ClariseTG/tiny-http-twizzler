@@ -184,7 +184,6 @@ impl SmolTcpListener {
     }
 
 }
-pub trait Write {}
 
 pub struct SmolTcpStream {
     // tcpsocket (copy of the one in listener)
@@ -225,14 +224,6 @@ impl SmolTcpStream {
 
     // connect
     // TODO: research what is a RefinedTcpStrema?
-
-}
-impl Write for SmolTcpStream {
-    fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
-        todo!();
-    }
-}
-impl Write for &SmolTcpStream {
 
 }
 
