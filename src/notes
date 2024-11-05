@@ -1,0 +1,10 @@
+file: notes
+MODIFIED FILES:
+shim.rs
+../test/shim-test.rs
+connection.rs
+lib.rs
+../Cargo.toml
+../../Cargo.toml
+example_httpclient.rs <-- CREATED
+utils.rs <-- CREATED for example_httpclient
