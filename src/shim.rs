@@ -1,5 +1,7 @@
+
+use lazy_static::lazy_static;
 use std::{
-    net::{Shutdown, SocketAddr, ToSocketAddrs},
+    net::{Shutdown, SocketAddr, ToSocketAddrs, IpAddr, Ipv4Addr,},
     path::PathBuf,
     io::{self, Read, Write, Error},
     sync::Mutex,
@@ -8,20 +10,97 @@ use smoltcp::{
     socket::{
         tcp::{Socket, ListenError, ConnectError},
     },
-    wire::{IpListenEndpoint, IpEndpoint},
+    time::{Instant},
+    phy::{Loopback, Medium}
+    wire::{IpListenEndpoint, IpEndpoint, EthernetAddress, IpAddress, IpCidr},
     storage::{Assembler, RingBuffer},
-    iface::{SocketSet},
+    iface::{Config, Interface, SocketHandle, SocketSet},
 };
 use managed::ManagedSlice;
+use crate::{
+    sys::unsupported, Arc,};
+
 // NOTE: the name of this type CHANGES between 0.8.2 (the version forked into
 //      Twizzler) and 0.11 (the default that docs.rs shows)⚠️
 
 // TODO -------------------------------------------
-// - bind function
+// - compile ananya's bind function
 // - write test script that checks that bind just creates a tcpsocket
 // - test script that checks the remote endpoint works
+// - check ananya's accept?
+// - start implementing other fns
 // ------------------------------------------------
 
+
+#[derive(Debug)]
+pub struct Engine {
+    // parts that need to be mutexed into: the core
+    core: Arc<Mutex<Core>>,
+    condvar: Arc<Condvar>,
+}
+
+struct Core {
+    socketset: SocketSet<'static>,
+    iface: Interface,
+    device: Loopback,
+    // init: bool,
+}
+
+lazy_static! {
+    static ref ENGINE: Arc<Engine> = Arc::new(Engine::new());
+}
+
+impl Engine {
+    fn new() -> Self {
+        Self {
+            core: Arc::new(Mutex::new(Core::new())),
+            condvar: Arc::new(Condvar::new()),
+        }
+    }
+    
+    /// add_socket(Socket<'static>) adds a static socket to the socket set.
+    fn add_socket(&self, socket: Socket<'static>) -> SocketHandle {
+        // unlock mutexed core
+        self.core.lock()
+            // maybe change this to expect() later?
+            .unwrap()
+            // add the socket. this returns the handle, which we just pass out.
+            .add_socket(socket)
+    }
+
+    fn check_socketset_conditions(pointer: Option<Arc<Engine>>) -> Arc<Engine> {
+        match pointer {
+            Some(e) => e,
+            None => {
+                let e = Arc::new(Self::new());
+                e
+            }
+        }
+    }
+}
+
+impl Core {
+    fn new() -> Self {
+        let config = Config::new(EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).into());
+        let mut socketset = SocketSet::new(Vec::new());
+        let mut device = Loopback::new(Medium::Ethernet);
+        let mut iface = Interface::new(config, &mut device, Instant::now());
+        
+        // 
+        iface.update_ip_addrs(|ip_addrs| {
+            ip_addrs
+                .push(IpCidr::new(IpAddress::v4(127,0,0,1), 8))
+                .unwrap();
+        });
+
+        // return core
+        Self {
+            socketset: socketset,
+            device: device,
+            iface: iface,
+        }
+    }
+}
 
 // a variant of std's tcplistener using smoltcp's api
 pub struct SmolTcpListener {
@@ -32,12 +111,15 @@ pub struct SmolTcpListener {
 pub fn init() {
     // TODO
     // global struct containing all of the actual sockets
-    let static mut socket_set: Mutex<SocketSet<'static>>;
+    //let static mut socket_set: Mutex<SocketSet<'static>>;
     // heap var with a pointer that everybody knows?
     // the socket SET isnt owned, so there's a mutex on it
-    socket_set = SocketSet::new(Vec::new());
+    //socket_set = SocketSet::new(Vec::new());
 }
 
+
+
+impl SmolTcpListener {
 pub fn bind<A: ToSocketAddrs>(addr: A)-> Result<SmolTcpListener, Error> {
     // takes an address and creates a listener
     // address is the "remote endpoint"
@@ -49,29 +131,6 @@ pub fn bind<A: ToSocketAddrs>(addr: A)-> Result<SmolTcpListener, Error> {
     // - what type goes in the rx/tx buffers?
     // - global variables?
     //
-
-    // notes 09-06-24
-    // smoltcp doesnt do stuff on its own
-    // we need to use a loop to make it do stuff on its own
-    // "poll" function is the driver
-    //      -> runs whenever something changes (such as send_slice modifying state machine)
-    //      -> if there is work to do it will do work
-    //      -> uses states to figure out if something needs to be done
-    //      -> native fn to smoltcp
-    //      -> poll is called on an interface
-    //      CONCLUSION: poll is like the execute() that i had in http130
-    //
-    // standard read/write will block until there is data and then return it
-    // sockets can be referred to by handles, which are MUCH easier to pass around
-    // the sockets themselves are locked and hard to move. but you can
-    //      index into them with easy to move names! yippee
-    // no lifetime information either if its just a usize inside
-    //
-    // make the Vec::new()s sized (daniel wrote it as a todo in the ex.)
-    // bind might have a .select_device() eventually in twz to support
-    //      hetero hardware/privacy
-    // "for now, no need to worry about the ip address" - daniel
-
     // TODO: what does this vector hold??
     let rcv_buf = Vec::with_capacity(4);
     let trs_buf = Vec::with_capacity(4);
@@ -80,8 +139,10 @@ pub fn bind<A: ToSocketAddrs>(addr: A)-> Result<SmolTcpListener, Error> {
 
     let socket = Socket::new(rx_buffer, tx_buffer);
     // place socket into socket array + extract the socket handle
-    let socket_id = socket_set.add(socket);
-        
+    //let socket_id = add(socket);
+    
+
+
     // put socket handle into SmolTcpListener
     let listener = SmolTcpListener {
         socket_handle: socket_id,
@@ -90,8 +151,6 @@ pub fn bind<A: ToSocketAddrs>(addr: A)-> Result<SmolTcpListener, Error> {
     // return:
     Ok(listener)
 }
-
-impl SmolTcpListener {
     // from
     // listener creates a smoltcp::socket, then calls listen() on it
     
@@ -106,6 +165,7 @@ impl SmolTcpListener {
     // return the stream object  
 }
 
+#[derive(Debug)]
 pub struct SmolTcpStream {
     socket_handle: usize,
     // ???
@@ -121,37 +181,59 @@ impl Read for &SmolTcpStream {
     //} else {
     //    println!("Cannot recieve :(");
     //}
+    unsupported()
     }
 }
 
-impl SmolTcpStream {
-    // read
-    // call can_recv
-    // call recv on up to the size of the buffer + load it
-    // return recv's f
-
+impl Write for &SmolTcpStream {
     // write
-    // call can_send
-    // call send on buffer, then return f from send
-
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize, Error>  {
+        // call can_send
+        // call send on buffer, then return f from send
+        unsupported() 
+    }
     // flush
-    // needs to make sure the output buffer is empty... 
-    //      maybe a loop of checking can_send until it's false?
-    // have to check how the buffer is emptied. it seems automatic?
+    pub fn flush(&mut self) -> Result<(), Error> {
+        // needs to make sure the output buffer is empty... 
+        //      maybe a loop of checking can_send until it's false?
+        // have to check how the buffer is emptied. it seems automatic?
+        unsupported()
+    }
+
+
+}
+
+impl SmolTcpStream {
+    
+    /// Opens a TCP connection to a remote host.
+    /// addr is an address of the remote host.
+    pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<TcpStream, Error> {
+        // probably changing the state of the socket, then doing a poll (for now)
+        unsupported()
+    }
 
     // peer_addr
-    // remote_endpoint...?
-    // TODO: what in the WORLD is a peer address i still haven't found the answer
+    pub fn peer_addr(&self) -> Result<SocketAddr, Error> {
+        // remote_endpoint...?
+        // TODO: what in the WORLD is a peer address i still haven't found the answer
+       unsupported() 
+    }
  
     // shutdown
-    // specifies shutdown of read, write, or both with an enum.
-    // write half shutdown with close().
-    // both with abort() though this will send a reset packet
-    // TODO: what to do for read half?
+    pub fn shutdown(&self, how: Shutdown) -> Result<(), Error>{
+        // specifies shutdown of read, write, or both with an enum.
+        // write half shutdown with close().
+        // both with abort() though this will send a reset packet
+        // TODO: what to do for read half?
+        unsupported()
+    }
   
     // try_clone
-    // use try_from on all of the contained elements?
-    // more doc reading necessary
+    pub fn try_clone(&self) -> Result<SmolTcpStream, Error> {
+        // use try_from on all of the contained elements?
+        // more doc reading necessary
+        unsupported()
+    }
    
     
 }

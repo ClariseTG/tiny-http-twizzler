@@ -3,17 +3,22 @@
 #[cfg(unix)]
 use std::os::unix::net as unix_net;
 use std::{
-    net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
+    net::{Shutdown, SocketAddr, ToSocketAddrs},
     path::PathBuf,
 };
+use crate::shim::SmolTcpListener as TcpListener;
+use crate::shim::SmolTcpStream as TcpStream;
 
 /// Unified listener. Either a [`TcpListener`] or [`std::os::unix::net::UnixListener`]
+// enum for listener implementations, i assume?
 pub enum Listener {
     Tcp(TcpListener),
     #[cfg(unix)]
     Unix(unix_net::UnixListener),
 }
+// implementation of the tcp listener
 impl Listener {
+    // returns local address
     pub(crate) fn local_addr(&self) -> std::io::Result<ListenAddr> {
         match self {
             Self::Tcp(l) => l.local_addr().map(ListenAddr::from),
@@ -21,7 +26,7 @@ impl Listener {
             Self::Unix(l) => l.local_addr().map(ListenAddr::from),
         }
     }
-
+    // accepts a connection
     pub(crate) fn accept(&self) -> std::io::Result<(Connection, Option<SocketAddr>)> {
         match self {
             Self::Tcp(l) => l
@@ -32,6 +37,7 @@ impl Listener {
         }
     }
 }
+// initializer...?
 impl From<TcpListener> for Listener {
     fn from(s: TcpListener) -> Self {
         Self::Tcp(s)
@@ -45,12 +51,14 @@ impl From<unix_net::UnixListener> for Listener {
 }
 
 /// Unified connection. Either a [`TcpStream`] or [`std::os::unix::net::UnixStream`].
+// implementation of tcpstream
 #[derive(Debug)]
 pub(crate) enum Connection {
     Tcp(TcpStream),
     #[cfg(unix)]
     Unix(unix_net::UnixStream),
 }
+// this is something albert's work addresses! yippee :)
 impl std::io::Read for Connection {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
@@ -79,6 +87,8 @@ impl std::io::Write for Connection {
 }
 impl Connection {
     /// Gets the peer's address. Some for TCP, None for Unix sockets.
+    // TODO: what in the world is a peer address
+    // (google search isnt particularly useful)
     pub(crate) fn peer_addr(&mut self) -> std::io::Result<Option<SocketAddr>> {
         match self {
             Self::Tcp(s) => s.peer_addr().map(Some),
@@ -86,7 +96,7 @@ impl Connection {
             Self::Unix(_) => Ok(None),
         }
     }
-
+    // returns a...?
     pub(crate) fn shutdown(&self, how: Shutdown) -> std::io::Result<()> {
         match self {
             Self::Tcp(s) => s.shutdown(how),

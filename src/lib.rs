@@ -102,7 +102,8 @@ use std::error::Error;
 use std::io::Error as IoError;
 use std::io::ErrorKind as IoErrorKind;
 use std::io::Result as IoResult;
-use std::net::{Shutdown, TcpStream, ToSocketAddrs};
+// edited
+use std::net::{Shutdown, ToSocketAddrs};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::mpsc;
@@ -129,6 +130,13 @@ mod response;
 mod ssl;
 mod test;
 mod util;
+mod shim;
+
+
+#[cfg(target_os = "twizzler")]
+pub use shim::SmolTcpListener as TcpListener;
+#[cfg(target_os = "twizzler")]
+pub use shim::SmolTcpStream as TcpStream;
 
 /// The main class of this library.
 ///
