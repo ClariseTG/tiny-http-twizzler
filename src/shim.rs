@@ -100,7 +100,11 @@ pub struct SmolTcpListener {
 }
 
 impl SmolTcpListener {
-    // each_addr
+    /* each_addr
+     * helper function for bind()
+     * processes each address given to see whether it can implement ToSocketAddr, then tries to listen on that addr
+     * keeps trying each address until one of them successfully listens
+    */
     fn each_addr<A: ToSocketAddrs>(sock_addrs: A, s: &mut Socket<'static>) -> Result<(u16, SocketAddr), ListenError> {
         let addrs = {
             match sock_addrs.to_socket_addrs() {
@@ -135,34 +139,42 @@ impl SmolTcpListener {
 
         let rx_buffer = SocketBuffer::new(Vec::new());
         let tx_buffer = SocketBuffer::new(Vec::new());
-        let mut sock = Socket::new(rx_buffer, tx_buffer);
+        let mut sock: Socket<'static> = Socket::new(rx_buffer, tx_buffer); // this is the listening socket
         let (port, local_address) = {
             match Self::each_addr(addrs, &mut sock) {
                 Ok((port, local_address)) => (port, local_address),
                 Err(_) => {
-                    return Err(Error::Other("listening error"))
+                    return Err(Error::other("listening error"))
                 },
             }
         };
-
         let handle = (*engine).add_socket(sock);
+        // allocate a queue to hold pending connection requests. sounds like a semaphore
         let tcp = SmolTcpListener { socket_handle: handle, port: port, local_addr: local_address};
         Ok(tcp)
     }
 
     // accept
-    // get socket from the socket set and connect()
-    // create tcpstream and return tcpstream
+    // block until there is a waiting connection in the queue
+    // create a new socket for tcpstream
+    // ^^ creating a new one so that the user can call accept() on the previous one again
+    // return tcpstream
     pub fn accept(&self) -> Result<(SmolTcpStream, SocketAddr), Error> {
         let engine = &ENGINE;
         let mut core = (*engine).core.lock().unwrap();
-        let cx = core.iface.context();
-        let mut core = (*engine).core.lock().unwrap();
         let socket = core.get_mutable_socket(self.socket_handle);
-        let addr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        let _ = socket.connect(cx, (addr, 1234), self.port).unwrap();
-        let stream = SmolTcpStream { socket_handle: self.socket_handle };
-        Ok((stream, SocketAddr::new(addr, self.port)))
+
+        println!("{}", socket.state()); // returns the state. for begugging information
+
+        let rx_buffer = SocketBuffer::new(Vec::new());
+        let tx_buffer = SocketBuffer::new(Vec::new());
+        let mut sock: Socket<'static> = Socket::new(rx_buffer, tx_buffer);
+        let stream_handle = engine.add_socket(sock);
+
+        println!("{}", socket.state()); // returns the state. for begugging information
+
+        let stream = SmolTcpStream { socket_handle: stream_handle };
+        Ok((stream, self.local_addr))
         // add in support for errors!
     }
 
@@ -172,6 +184,7 @@ impl SmolTcpListener {
     }
 
 }
+pub trait Write {}
 
 pub struct SmolTcpStream {
     // tcpsocket (copy of the one in listener)
@@ -209,13 +222,17 @@ impl SmolTcpStream {
     // more doc reading necessary
    
     // from
-    // shutdown
-    // peet_addr
-    // flush
 
     // connect
     // TODO: research what is a RefinedTcpStrema?
 
+}
+impl Write for SmolTcpStream {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
+        todo!();
+    }
+}
+impl Write for &SmolTcpStream {
 
 }
 
