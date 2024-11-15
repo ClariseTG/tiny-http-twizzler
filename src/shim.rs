@@ -4,18 +4,17 @@
 use lazy_static::lazy_static;
 use std::{
     sync::{Arc, Condvar, Mutex},
-    net::{Shutdown, SocketAddr, ToSocketAddrs, IpAddr, Ipv4Addr},
-    path::PathBuf,
-    io::Error,
+    net::{SocketAddr, ToSocketAddrs, Shutdown},
+    io::{Error, Write, Read},
 };
 use smoltcp::{
     socket::{ 
-        tcp::{Socket, ListenError, ConnectError}
+        tcp::{Socket, ListenError,}
     },
     time::{Instant},
     phy::{Loopback, Medium},
-    wire::{IpListenEndpoint, IpEndpoint, EthernetAddress, IpAddress, IpCidr},
-    storage::{Assembler, RingBuffer},
+    wire::{EthernetAddress, IpAddress, IpCidr},
+    storage::{RingBuffer},
     iface::{Config, Interface, SocketHandle, SocketSet}
 };
 pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
@@ -172,6 +171,7 @@ impl SmolTcpListener {
         let stream_handle = engine.add_socket(sock);
 
         println!("{}", socket.state()); // returns the state. for begugging information
+        // polling 
 
         let stream = SmolTcpStream { socket_handle: stream_handle };
         Ok((stream, self.local_addr))
@@ -185,48 +185,73 @@ impl SmolTcpListener {
 
 }
 
+#[derive(Debug)]
 pub struct SmolTcpStream {
     // tcpsocket (copy of the one in listener)
     socket_handle: SocketHandle
 }
-
-impl SmolTcpStream {
-    // imp. read
-    // call can_recv
-    // call recv on up to the size of the buffer + load it
-    // return recv's f
-
+impl Read for SmolTcpStream {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+    // check if the socket can even recieve
+    //if may_recv(&self) {
+    //    println!("Can recieve!");
+        // call recv on up to the size of the buffer + load it
+        // return recv's f
+    //} else {
+    //    println!("Cannot recieve :(");
+    //}
+    todo!();
+    }
+}
+impl Write for SmolTcpStream {
     // write
-    // call can_send
-    // call send on buffer, then return f from send
-
-    // flush
-    // needs to make sure the output buffer is empty... 
-    //      maybe a loop of checking can_send until it's false?
-    // have to check how the buffer is emptied. it seems automatic?
-
-    // peer_addr
-    // remote_endpoint...?
-    // TODO: what in the WORLD is a peer address i still haven't found the answer
-    // ^^ it's the ip address of the router i think
- 
-    // shutdown
-    // specifies shutdown of read, write, or both with an enum.
-    // write half shutdown with close().
-    // both with abort() though this will send a reset packet
-    // TODO: what to do for read half?
-  
-    // try_clone
-    // use try_from on all of the contained elements?
-    // more doc reading necessary
-   
-    // from
-
-    // connect
-    // TODO: research what is a RefinedTcpStrema?
-
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Error>  {
+        // call can_send
+        // call send on buffer, then return f from send
+        todo!(); 
+    }
+    fn flush(&mut self) -> Result<(), Error> {
+        // needs to make sure the output buffer is empty... 
+        //      maybe a loop of checking can_send until it's false?
+        // have to check how the buffer is emptied. it seems automatic?
+        todo!()
+    }
+}
+pub trait From<SmolTcpStream> {
+    fn new(){}
+    fn from(s: SmolTcpStream) -> Self where Self:Sized {todo!();}
+}
+impl From<SmolTcpStream> for SmolTcpStream {
+    fn from(s: SmolTcpStream) -> SmolTcpStream {
+        todo!();
+    }
 }
 
+impl SmolTcpStream {
+    /// Opens a TCP connection to a remote host.
+    /// addr is an address of the remote host.
+    pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<SmolTcpStream, Error> {
+        // probably changing the state of the socket, then doing a poll (for now)
+        todo!()
+    }
+    pub fn peer_addr(&self) -> Result<SocketAddr, Error> {
+        todo!() 
+    }
+    pub fn shutdown(&self, how: Shutdown) -> Result<(), Error>{
+        // specifies shutdown of read, write, or both with an enum.
+        // write half shutdown with close().
+        // both with abort() though this will send a reset packet
+        // TODO: what to do for read half?
+        todo!();
+    }
+    pub fn try_clone(&self) -> Result<SmolTcpStream, Error> {
+        // use try_from on all of the contained elements?
+        // more doc reading necessary
+        todo!()
+    }
+}
+// implement impl std::fmt::Debug for SmolTcpStream
+// add `#[derive(Debug)]` to `SmolTcpStream` or manually `impl std::fmt::Debug for SmolTcpStream`
 
 /*
 tests:
@@ -239,6 +264,7 @@ mod tests {
     use std::net::SocketAddr;
     #[test]
     fn make_listener() {
-        let _listener = SmolTcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 443))).unwrap();
+        let listener = SmolTcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 443))).unwrap();
+        let stream = listener.accept();
     }
 }
