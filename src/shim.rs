@@ -145,7 +145,7 @@ pub fn bind<A: ToSocketAddrs>(addr: A)-> Result<SmolTcpListener, Error> {
 
     // put socket handle into SmolTcpListener
     let listener = SmolTcpListener {
-        socket_handle: socket_id,
+        socket_handle: socket,
     };
 
     // return:
@@ -207,7 +207,7 @@ impl SmolTcpStream {
     
     /// Opens a TCP connection to a remote host.
     /// addr is an address of the remote host.
-    pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<TcpStream, Error> {
+    pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<SmolTcpStream, Error> {
         // probably changing the state of the socket, then doing a poll (for now)
         unsupported()
     }
