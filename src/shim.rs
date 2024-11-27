@@ -190,6 +190,8 @@ impl SmolTcpListener {
         let engine = &ENGINE;
         let mut core = (*engine).core.lock().unwrap();
         let socket = core.get_mutable_socket(self.socket_handle);
+        println!("accept(): got socket.");
+        std::mem::drop(socket);
         // std::mem::drop(core);
         
         // engine.blocking(|core| {
@@ -200,13 +202,16 @@ impl SmolTcpListener {
         //         None
         //     }
         // });
-        println!("entered accept(), state of socket is: {}", socket.state()); // returns the state. for begugging information
+        println!("entered accept(), state is probably listening");
+        // println!("entered accept(), state of socket is: {}", socket.state()); // returns the state. for begugging information
         let rx_buffer = SocketBuffer::new(Vec::new());
         let tx_buffer = SocketBuffer::new(Vec::new());
         let mut sock: Socket<'static> = Socket::new(rx_buffer, tx_buffer);
+        println!("accept(): about to add socket.");
         let stream_handle = engine.add_socket(sock);
 
-        println!("accept(), new state of socket now is: {}", socket.state()); // returns the state. for begugging information
+        println!("added socket");
+        // println!("accept(), new state of socket now is: {}", sock.state()); // returns the state. for begugging information
         // polling 
 
         let stream = SmolTcpStream { socket_handle: stream_handle };
@@ -287,8 +292,9 @@ impl SmolTcpStream {
 
         // });
         let error = sock.connect(iface.context(), (IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1234), 49152); // make sure local endpoint matches the server address
-        let handle = (*engine).add_socket(sock);
         println!("here2");
+        let handle = (*engine).add_socket(sock);
+        println!("here3");
         match error {
             Err(e) => {
                 println!("connect(): connection error!! {}", e);
