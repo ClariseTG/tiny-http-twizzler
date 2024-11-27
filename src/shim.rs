@@ -4,7 +4,7 @@
 use lazy_static::lazy_static;
 use std::{
     sync::{Arc, Condvar, Mutex},
-    net::{SocketAddr, ToSocketAddrs, Shutdown},
+    net::{SocketAddr, ToSocketAddrs, Shutdown, Ipv4Addr, IpAddr},
     io::{Error, Write, Read},
 };
 use smoltcp::{
@@ -17,13 +17,13 @@ use smoltcp::{
     storage::{RingBuffer},
     iface::{Config, Interface, SocketHandle, SocketSet}
 };
-pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
+// use tracing; 
 
+pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
 pub struct Engine {
     core: Arc<Mutex<Core>>,
     condvar: Arc<Condvar>,
 }
-
 struct Core {
     socketset: SocketSet<'static>,
     iface: Interface,
@@ -57,7 +57,29 @@ impl Engine {
         }
     }
     // fns to get sockets
-    fn block(){}
+    // Block until f returns Some(R), and then return R. Note that f may be called multiple times, and it may
+    // be called spuriously.
+    fn blocking<R>(&self, mut f: impl FnMut(&mut Core) -> Option<R>) -> R {
+        let mut inner = self.core.lock().unwrap();
+        println!("blocking(): polling from blocking");
+        // Immediately poll, since we wait to have as up-to-date state as possible.
+        inner.poll(&self.condvar);
+        loop {
+            // We'll need the polling thread to wake up and do work.
+            // self.channel.send(()).unwrap();
+            match f(&mut *inner) {
+                Some(r) => {
+                    // We have done work, so again, notify the polling thread.
+                    // self.channel.send(()).unwrap();
+                    return r;
+                }
+                None => {
+                    println!("blocking(): blocking thread");
+                    inner = self.condvar.wait(inner).unwrap();
+                }
+            }
+        }
+    }
 }
 
 impl Core {
@@ -87,7 +109,13 @@ impl Core {
         self.socketset.get_mut(handle)
     }
     fn poll(&mut self, waiter: &Condvar) -> bool {
-        todo!();
+        let res = self
+            .iface
+            .poll(Instant::now(), &mut self.device, &mut self.socketset);
+        // When we poll, notify the CV so that other waiting threads can retry their blocking operations.
+        println!("poll(): notify cv");
+        waiter.notify_all();
+        res
     }
 }
 
@@ -162,15 +190,23 @@ impl SmolTcpListener {
         let engine = &ENGINE;
         let mut core = (*engine).core.lock().unwrap();
         let socket = core.get_mutable_socket(self.socket_handle);
-
-        println!("{}", socket.state()); // returns the state. for begugging information
-
+        // std::mem::drop(core);
+        
+        // engine.blocking(|core| {
+            // let socket = core.get_mutable_socket(self.socket_handle);
+        //     if socket.is_active() {
+        //         Some(())
+        //     } else {
+        //         None
+        //     }
+        // });
+        println!("entered accept(), state of socket is: {}", socket.state()); // returns the state. for begugging information
         let rx_buffer = SocketBuffer::new(Vec::new());
         let tx_buffer = SocketBuffer::new(Vec::new());
         let mut sock: Socket<'static> = Socket::new(rx_buffer, tx_buffer);
         let stream_handle = engine.add_socket(sock);
 
-        println!("{}", socket.state()); // returns the state. for begugging information
+        println!("accept(), new state of socket now is: {}", socket.state()); // returns the state. for begugging information
         // polling 
 
         let stream = SmolTcpStream { socket_handle: stream_handle };
@@ -231,19 +267,58 @@ impl SmolTcpStream {
     /// Opens a TCP connection to a remote host.
     /// addr is an address of the remote host.
     pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<SmolTcpStream, Error> {
-        // probably changing the state of the socket, then doing a poll (for now)
-        todo!()
+        // check that bind() & accept() has alr been called ? if this is a client function, how does that work?
+        println!("in connect()");
+        let engine = &ENGINE;
+        let rx_buffer = SocketBuffer::new(Vec::new());
+        let tx_buffer = SocketBuffer::new(Vec::new());
+        let mut sock = Socket::new(rx_buffer, tx_buffer);
+        let config = Config::new(EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).into()); // change later?
+        let mut device = Loopback::new(Medium::Ethernet);
+        let mut iface = Interface::new(config, &mut device, Instant::now());
+        iface.update_ip_addrs(|ip_addrs| {
+            ip_addrs
+                .push(IpCidr::new(IpAddress::v4(127, 0, 0, 1), 8))
+                .unwrap();
+        });
+        println!("here?");
+        // let mut core = (*engine).core.lock().unwrap();
+        // engine.blocking (|core| {
+
+        // });
+        let error = sock.connect(iface.context(), (IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1234), 49152); // make sure local endpoint matches the server address
+        let handle = (*engine).add_socket(sock);
+        println!("here2");
+        match error {
+            Err(e) => {
+                println!("connect(): connection error!! {}", e);
+                return Err(Error::other("connection error"));
+            },
+            Ok(()) => {
+                println!("ok");
+            },
+        }
+        let tcp = SmolTcpStream { socket_handle: handle };
+        Ok(tcp)
     }
+
     pub fn peer_addr(&self) -> Result<SocketAddr, Error> {
         todo!() 
     }
+
     pub fn shutdown(&self, how: Shutdown) -> Result<(), Error>{
         // specifies shutdown of read, write, or both with an enum.
         // write half shutdown with close().
         // both with abort() though this will send a reset packet
         // TODO: what to do for read half?
+        match how {
+            Shutdown::Read => {},
+            Shutdown::Write => {},
+            Shutdown::Both => {}
+        }
         todo!();
     }
+
     pub fn try_clone(&self) -> Result<SmolTcpStream, Error> {
         // use try_from on all of the contained elements?
         // more doc reading necessary

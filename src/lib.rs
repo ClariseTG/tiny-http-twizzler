@@ -130,7 +130,7 @@ mod response;
 mod ssl;
 mod test;
 mod util;
-mod shim;
+pub mod shim;
 
 // #[cfg(target_os = "twizzler")]
 use shim::SmolTcpListener as TcpListener;
