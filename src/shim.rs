@@ -1,23 +1,18 @@
-// NOTES
-// what ip/dest
-
 use lazy_static::lazy_static;
-use std::{
-    sync::{Arc, Condvar, Mutex},
-    net::{SocketAddr, ToSocketAddrs, Shutdown, Ipv4Addr, IpAddr},
-    io::{Error, Write, Read},
-};
 use smoltcp::{
-    socket::{ 
-        tcp::{Socket, ListenError,}
-    },
-    time::{Instant},
+    iface::{Config, Interface, SocketHandle, SocketSet},
     phy::{Loopback, Medium},
+    socket::tcp::{ListenError, Socket},
+    storage::RingBuffer,
+    time::Instant,
     wire::{EthernetAddress, IpAddress, IpCidr},
-    storage::{RingBuffer},
-    iface::{Config, Interface, SocketHandle, SocketSet}
 };
-// use tracing; 
+use std::{
+    io::{Error, Read, Write},
+    net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, ToSocketAddrs},
+    sync::{Arc, Condvar, Mutex},
+};
+// use tracing;
 
 pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
 pub struct Engine {
@@ -27,7 +22,7 @@ pub struct Engine {
 struct Core {
     socketset: SocketSet<'static>,
     iface: Interface,
-    device: Loopback, // for now.
+    device: Loopback, // for now
 }
 
 lazy_static! {
@@ -79,6 +74,7 @@ impl Engine {
                 }
             }
         }
+        // mutex dropped here.
     }
 }
 
@@ -121,8 +117,8 @@ impl Core {
 
 // a variant of std's tcplistener using smoltcp's api
 pub struct SmolTcpListener {
-    local_addr: SocketAddr,
     socket_handle: SocketHandle,
+    local_addr: SocketAddr,
     port: u16,
 }
 
@@ -131,53 +127,67 @@ impl SmolTcpListener {
      * helper function for bind()
      * processes each address given to see whether it can implement ToSocketAddr, then tries to listen on that addr
      * keeps trying each address until one of them successfully listens
-    */
-    fn each_addr<A: ToSocketAddrs>(sock_addrs: A, s: &mut Socket<'static>) -> Result<(u16, SocketAddr), ListenError> {
+     */
+    fn each_addr<A: ToSocketAddrs>(
+        sock_addrs: A,
+        s: &mut Socket<'static>,
+    ) -> Result<(u16, SocketAddr), ListenError> {
         let addrs = {
             match sock_addrs.to_socket_addrs() {
-                Ok(addrs) => addrs, 
+                Ok(addrs) => addrs,
                 Err(e) => return Err(ListenError::InvalidState),
             }
         };
         for addr in addrs {
             match (*s).listen(addr.port()) {
-                Ok(_) => {
-                    return Ok((addr.port(), addr))
-                },
+                Ok(_) => return Ok((addr.port(), addr)),
                 Err(_) => return Err(ListenError::Unaddressable),
             }
         }
         Err(ListenError::InvalidState) // is that the correct thing to return?
     }
-    /* bind
-    * accepts: address(es) 
-    * returns: a tcpsocket
-    * creates a tcpsocket and binds the address to that socket. 
-    * if multiple addresses given, it will attempt to bind to each until successful
-    */
-    /*
-        example arguments passed to bind: 
-        "127.0.0.1:0"
-        SocketAddr::from(([127, 0, 0, 1], 443))
-        let addrs = [ SocketAddr::from(([127, 0, 0, 1], 80)),  SocketAddr::from(([127, 0, 0, 1], 443)), ];
-    */
-    pub fn bind<A: ToSocketAddrs>(addrs: A) -> Result<SmolTcpListener, Error> {
-        let engine = &ENGINE;
-
+    fn do_bind<A: ToSocketAddrs>(addrs: A) -> Result<(Socket<'static>, u16, SocketAddr), Error> {
         let rx_buffer = SocketBuffer::new(Vec::new());
         let tx_buffer = SocketBuffer::new(Vec::new());
         let mut sock: Socket<'static> = Socket::new(rx_buffer, tx_buffer); // this is the listening socket
         let (port, local_address) = {
             match Self::each_addr(addrs, &mut sock) {
                 Ok((port, local_address)) => (port, local_address),
-                Err(_) => {
-                    return Err(Error::other("listening error"))
-                },
+                Err(_) => return Err(Error::other("listening error")),
             }
         };
+        Ok((sock, port, local_address))
+    }
+    /* bind
+     * accepts: address(es)
+     * returns: a tcpsocket
+     * creates a tcpsocket and binds the address to that socket.
+     * if multiple addresses given, it will attempt to bind to each until successful
+     */
+    /*
+        example arguments passed to bind:
+        "127.0.0.1:0"
+        SocketAddr::from(([127, 0, 0, 1], 443))
+        let addrs = [ SocketAddr::from(([127, 0, 0, 1], 80)),  SocketAddr::from(([127, 0, 0, 1], 443)), ];
+    */
+    pub fn bind<A: ToSocketAddrs>(addrs: A) -> Result<SmolTcpListener, Error> {
+        let engine = &ENGINE;
+        let (sock, port, local_address) = {
+            match Self::do_bind(addrs) {
+                Ok((sock, port, local_address)) => (sock, port, local_address),
+                Err(_) => {
+                    return Err(Error::other("listening error"));
+                }
+            }
+        };
+        println!("in bind");
         let handle = (*engine).add_socket(sock);
         // allocate a queue to hold pending connection requests. sounds like a semaphore
-        let tcp = SmolTcpListener { socket_handle: handle, port: port, local_addr: local_address};
+        let tcp = SmolTcpListener {
+            socket_handle: handle,
+            port: port,
+            local_addr: local_address,
+        };
         Ok(tcp)
     }
 
@@ -187,80 +197,124 @@ impl SmolTcpListener {
     // ^^ creating a new one so that the user can call accept() on the previous one again
     // return tcpstream
     pub fn accept(&self) -> Result<(SmolTcpStream, SocketAddr), Error> {
+        // create another socket to listen on the same port and use that as a listener
+        // we can have multiple sockets listening on the same port
+        println!("in accept");
+        // this is the listener
         let engine = &ENGINE;
+        let stream;
         let mut core = (*engine).core.lock().unwrap();
         let socket = core.get_mutable_socket(self.socket_handle);
-        println!("accept(): got socket.");
-        std::mem::drop(socket);
-        // std::mem::drop(core);
-        
-        // engine.blocking(|core| {
-            // let socket = core.get_mutable_socket(self.socket_handle);
+        // loop {
+        // let timestamp = Instant::now();
+        // unsafe {
+        //     let mut core = (*engine).core.lock().unwrap();
+        //     let device = &mut core.device;
+        //     let sockets = &mut core.socketset;
+        //     core.iface.poll(timestamp, device, sockets);
+        // }
+        // {
+        //     let mut core = (*engine).core.lock().unwrap();
+        //     let socket = core.get_mutable_socket(self.socket_handle);
+        //     drop(core);
         //     if socket.is_active() {
+        //         Self::bind(self.local_addr);
+        //         println!("accepted connection");
+        //         stream = SmolTcpStream {
+        //             socket_handle: self.socket_handle,
+        //             local_addr: self.local_addr,
+        //             port: self.port,
+        //         };
+        //         // the socket addr returned is that of the remote endpoint. ie. the client.
+        //         let remote = socket.remote_endpoint().unwrap();
+        //         let remote_addr = SocketAddr::from((remote.addr, remote.port));
+        //         return Ok((stream, remote_addr));
+        //     }
+        // }
+        if socket.is_active() {
+            let _ = Self::bind(self.local_addr);
+            println!("accept() socket active");
+            if socket.can_recv() {
+                println!("accept() can recv data");
+            }
+            let remote = socket.remote_endpoint().unwrap();
+            let remote_addr = SocketAddr::from((remote.addr, remote.port));
+            stream = SmolTcpStream {
+                socket_handle: self.socket_handle,
+                local_addr: self.local_addr,
+                port: self.port,
+            };
+            return Ok((stream, remote_addr));
+        }
+
+        // }
+
+        // the socket addr returned is that of the remote endpoint. ie. the client.
+
+        return Err(Error::other("accepting error"));
+
+        // engine.blocking(|core| {
+        //     println!("get here");
+        //     let socket = (*core).get_mutable_socket(self.socket_handle);
+        //     // FIXME is_active never returns
+        //     if socket.is_active() {
+        //         drop(*core);
         //         Some(())
         //     } else {
+        //         drop(*core);
         //         None
         //     }
         // });
-        println!("entered accept(), state is probably listening");
-        // println!("entered accept(), state of socket is: {}", socket.state()); // returns the state. for begugging information
-        let rx_buffer = SocketBuffer::new(Vec::new());
-        let tx_buffer = SocketBuffer::new(Vec::new());
-        let mut sock: Socket<'static> = Socket::new(rx_buffer, tx_buffer);
-        println!("accept(): about to add socket.");
-        let stream_handle = engine.add_socket(sock);
-
-        println!("added socket");
-        // println!("accept(), new state of socket now is: {}", sock.state()); // returns the state. for begugging information
-        // polling 
-
-        let stream = SmolTcpStream { socket_handle: stream_handle };
-        Ok((stream, self.local_addr))
-        // add in support for errors!
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr, Error> {
+        // rethink this one.
+        // smoltcp supports fns listen_endpoint() and local_endpoint(). use one of those instead.
         return Ok(self.local_addr);
-        // add in support for error!
     }
-
 }
 
 #[derive(Debug)]
 pub struct SmolTcpStream {
-    // tcpsocket (copy of the one in listener)
-    socket_handle: SocketHandle
+    socket_handle: SocketHandle,
+    local_addr: SocketAddr,
+    port: u16,
 }
 impl Read for SmolTcpStream {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
-    // check if the socket can even recieve
-    //if may_recv(&self) {
-    //    println!("Can recieve!");
+        // check if the socket can even recieve
+        //if may_recv(&self) {
+        //    println!("Can recieve!");
         // call recv on up to the size of the buffer + load it
         // return recv's f
-    //} else {
-    //    println!("Cannot recieve :(");
-    //}
-    todo!();
+        //} else {
+        //    println!("Cannot recieve :");
+        //}
+        todo!();
     }
 }
 impl Write for SmolTcpStream {
     // write
-    fn write(&mut self, buf: &[u8]) -> Result<usize, Error>  {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
         // call can_send
         // call send on buffer, then return f from send
-        todo!(); 
+        todo!();
     }
     fn flush(&mut self) -> Result<(), Error> {
-        // needs to make sure the output buffer is empty... 
+        // needs to make sure the output buffer is empty...
         //      maybe a loop of checking can_send until it's false?
         // have to check how the buffer is emptied. it seems automatic?
         todo!()
     }
 }
 pub trait From<SmolTcpStream> {
-    fn new(){}
-    fn from(s: SmolTcpStream) -> Self where Self:Sized {todo!();}
+    fn new() {}
+    fn from(s: SmolTcpStream) -> Self
+    where
+        Self: Sized,
+    {
+        todo!();
+    }
 }
 impl From<SmolTcpStream> for SmolTcpStream {
     fn from(s: SmolTcpStream) -> SmolTcpStream {
@@ -272,7 +326,6 @@ impl SmolTcpStream {
     /// Opens a TCP connection to a remote host.
     /// addr is an address of the remote host.
     pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<SmolTcpStream, Error> {
-        // check that bind() & accept() has alr been called ? if this is a client function, how does that work?
         println!("in connect()");
         let engine = &ENGINE;
         let rx_buffer = SocketBuffer::new(Vec::new());
@@ -291,7 +344,11 @@ impl SmolTcpStream {
         // engine.blocking (|core| {
 
         // });
-        let error = sock.connect(iface.context(), (IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1234), 49152); // make sure local endpoint matches the server address
+        let error = sock.connect(
+            iface.context(),
+            (IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1234),
+            49152,
+        ); // make sure remote endpoint matches the server address
         println!("here2");
         let handle = (*engine).add_socket(sock);
         println!("here3");
@@ -299,27 +356,31 @@ impl SmolTcpStream {
             Err(e) => {
                 println!("connect(): connection error!! {}", e);
                 return Err(Error::other("connection error"));
-            },
+            }
             Ok(()) => {
                 println!("ok");
-            },
+            }
         }
-        let tcp = SmolTcpStream { socket_handle: handle };
+        let tcp = SmolTcpStream {
+            socket_handle: handle,
+            port: 49152,
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 49152),
+        };
         Ok(tcp)
     }
 
     pub fn peer_addr(&self) -> Result<SocketAddr, Error> {
-        todo!() 
+        todo!()
     }
 
-    pub fn shutdown(&self, how: Shutdown) -> Result<(), Error>{
+    pub fn shutdown(&self, how: Shutdown) -> Result<(), Error> {
         // specifies shutdown of read, write, or both with an enum.
         // write half shutdown with close().
         // both with abort() though this will send a reset packet
         // TODO: what to do for read half?
         match how {
-            Shutdown::Read => {},
-            Shutdown::Write => {},
+            Shutdown::Read => {}
+            Shutdown::Write => {}
             Shutdown::Both => {}
         }
         todo!();

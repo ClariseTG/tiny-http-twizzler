@@ -87,7 +87,7 @@
 //! # let response = tiny_http::Response::from_file(File::open(&Path::new("image.png")).unwrap());
 //! let _ = request.respond(response);
 //! ```
-#![forbid(unsafe_code)]
+// #![forbid(unsafe_code)]
 #![deny(rust_2018_idioms)]
 #![allow(clippy::match_like_matches_macro)]
 
@@ -124,13 +124,14 @@ pub use test::TestRequest;
 mod client;
 mod common;
 mod connection;
+pub mod engine;
 mod log;
 mod request;
 mod response;
+pub mod shim;
 mod ssl;
 mod test;
 mod util;
-pub mod shim;
 
 // #[cfg(target_os = "twizzler")]
 use shim::SmolTcpListener as TcpListener;
