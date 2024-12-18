@@ -181,16 +181,28 @@ impl Read for &SmolTcpStream {
 impl Write for &SmolTcpStream {
     // write
     fn write(&mut self, buf: &[u8]) -> io::Result<usize, Error>  {
-        //TODO: UNTESTED AND UNFINISHED
         // get socket
         let engine = &ENGINE;
-        // create a do_r_wr fn of some kind, match this to sock, port, local_address
-        if (sock.can_send()) {
-        // call can_send
-        // call send on buffer, then return f from send
-            // TODO this will panic most likely lmao
-            sock.send_slice(buf).unwrap();
+        // TODO: get_mutable_socket not implemented at engine level.
+        // relying on changes to ananya's code.
+        // changes include copying the engine add_socket function and changing
+        // it to get_mutable_socket, but if it's not implemented there
+        // must be a complication. talk to her about it.
+        let socket = engine.get_mutable_socket(self.socket_handle);
+        
+        // throw what you can in the xmit buffer...
+        if (socket.may_send()){
+            // TODO: this might just work since send() returns
+            // a Result<usize, SendError> and write wants a Result<usize>
+            // but the errors might be incompatible so well see
+            //
+            // ...and return the result from send()
+            socket.send(buf)
+        } else {
+            // TODO: throw invalid state error
         }
+
+        
     }
     // flush
     pub fn flush(&mut self) -> Result<(), Error> {
@@ -198,13 +210,31 @@ impl Write for &SmolTcpStream {
         //      maybe a loop of checking can_send until it's false?
         // have to check how the buffer is emptied. it seems automatic?
         unsupported()
+        /*
+        // while (there is still data to send) {
+            // checks if:
+            // -> conn. is open
+            // -> xmit buffer not full
+            if (socket.can_send()) {
+            // call send on buffer, then return f from send
+                // instead of buf, make a buffer that holds whats
+                // LEFT to send, instead of all of it. that way we can
+                // drip-feed the socket until everything we need gets sent.
+                socket.send_slice(buf).unwrap();
+            }
+            // TODO
+            // if (!may_send){
+                // throw invalid state error
+            // }
+        //}
+        */
     }
 
 
 }
 
 impl SmolTcpStream {
-    
+
     /// Opens a TCP connection to a remote host.
     /// addr is an address of the remote host.
     pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<SmolTcpStream, Error> {
