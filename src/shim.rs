@@ -1,4 +1,3 @@
-
 use lazy_static::lazy_static;
 use std::{
     net::{Shutdown, SocketAddr, ToSocketAddrs, IpAddr, Ipv4Addr,},
@@ -20,17 +19,11 @@ use managed::ManagedSlice;
 use crate::{
     sys::unsupported, Arc,};
 
-// NOTE: the name of this type CHANGES between 0.8.2 (the version forked into
-//      Twizzler) and 0.11 (the default that docs.rs shows)⚠️
-
-// TODO -------------------------------------------
-// - compile ananya's bind function
-// - write test script that checks that bind just creates a tcpsocket
-// - test script that checks the remote endpoint works
-// - check ananya's accept?
-// - start implementing other fns
-// ------------------------------------------------
-
+// TODO ----------------------------
+// 
+// 
+// 
+// ---------------------------------
 
 #[derive(Debug)]
 pub struct Engine {
@@ -188,9 +181,16 @@ impl Read for &SmolTcpStream {
 impl Write for &SmolTcpStream {
     // write
     fn write(&mut self, buf: &[u8]) -> io::Result<usize, Error>  {
+        //TODO: UNTESTED AND UNFINISHED
+        // get socket
+        let engine = &ENGINE;
+        // create a do_r_wr fn of some kind, match this to sock, port, local_address
+        if (sock.can_send()) {
         // call can_send
         // call send on buffer, then return f from send
-        unsupported() 
+            // TODO this will panic most likely lmao
+            sock.send_slice(buf).unwrap();
+        }
     }
     // flush
     pub fn flush(&mut self) -> Result<(), Error> {
@@ -209,6 +209,7 @@ impl SmolTcpStream {
     /// addr is an address of the remote host.
     pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<SmolTcpStream, Error> {
         // probably changing the state of the socket, then doing a poll (for now)
+        //
         unsupported()
     }
 
