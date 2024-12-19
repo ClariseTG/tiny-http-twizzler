@@ -1,3 +1,9 @@
+use std::{
+    io::{Error, Read, Write},
+    net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, ToSocketAddrs},
+    sync::{Arc, Condvar, Mutex},
+};
+
 use lazy_static::lazy_static;
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet},
@@ -6,11 +12,6 @@ use smoltcp::{
     storage::RingBuffer,
     time::Instant,
     wire::{EthernetAddress, IpAddress, IpCidr},
-};
-use std::{
-    io::{Error, Read, Write},
-    net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, ToSocketAddrs},
-    sync::{Arc, Condvar, Mutex},
 };
 // use tracing;
 
@@ -39,21 +40,9 @@ impl Engine {
     fn add_socket(&self, socket: Socket<'static>) -> SocketHandle {
         self.core.lock().unwrap().add_socket(socket)
     }
-
-    // check_socketset_conditions
-    // checks whether socket set exists. else makes a new one
-    fn check_socketset_conditions(pointer: Option<Arc<Engine>>) -> Arc<Engine> {
-        match pointer {
-            Some(e) => e,
-            None => {
-                let e = Arc::new(Self::new());
-                e
-            }
-        }
-    }
     // fns to get sockets
-    // Block until f returns Some(R), and then return R. Note that f may be called multiple times, and it may
-    // be called spuriously.
+    // Block until f returns Some(R), and then return R. Note that f may be called multiple times,
+    // and it may be called spuriously.
     fn blocking<R>(&self, mut f: impl FnMut(&mut Core) -> Option<R>) -> R {
         let mut inner = self.core.lock().unwrap();
         println!("blocking(): polling from blocking");
@@ -90,9 +79,9 @@ impl Core {
                 .unwrap();
         });
         Self {
-            socketset: socketset,
-            device: device,
-            iface: iface,
+            socketset,
+            device,
+            iface,
         }
     }
     fn add_socket(&mut self, sock: Socket<'static>) -> SocketHandle {
@@ -108,9 +97,10 @@ impl Core {
         let res = self
             .iface
             .poll(Instant::now(), &mut self.device, &mut self.socketset);
-        // When we poll, notify the CV so that other waiting threads can retry their blocking operations.
-        println!("poll(): notify cv");
-        waiter.notify_all();
+        // When we poll, notify the CV so that other waiting threads can retry their blocking
+        // operations.
+        // println!("poll(): notify cv");
+        // waiter.notify_all();
         res
     }
 }
@@ -125,8 +115,8 @@ pub struct SmolTcpListener {
 impl SmolTcpListener {
     /* each_addr
      * helper function for bind()
-     * processes each address given to see whether it can implement ToSocketAddr, then tries to listen on that addr
-     * keeps trying each address until one of them successfully listens
+     * processes each address given to see whether it can implement ToSocketAddr, then tries to
+     * listen on that addr keeps trying each address until one of them successfully listens
      */
     fn each_addr<A: ToSocketAddrs>(
         sock_addrs: A,
@@ -185,7 +175,7 @@ impl SmolTcpListener {
         // allocate a queue to hold pending connection requests. sounds like a semaphore
         let tcp = SmolTcpListener {
             socket_handle: handle,
-            port: port,
+            port,
             local_addr: local_address,
         };
         Ok(tcp)
@@ -203,51 +193,49 @@ impl SmolTcpListener {
         // this is the listener
         let engine = &ENGINE;
         let stream;
-        let mut core = (*engine).core.lock().unwrap();
-        let socket = core.get_mutable_socket(self.socket_handle);
-        // loop {
-        // let timestamp = Instant::now();
-        // unsafe {
-        //     let mut core = (*engine).core.lock().unwrap();
-        //     let device = &mut core.device;
-        //     let sockets = &mut core.socketset;
-        //     core.iface.poll(timestamp, device, sockets);
-        // }
-        // {
-        //     let mut core = (*engine).core.lock().unwrap();
-        //     let socket = core.get_mutable_socket(self.socket_handle);
-        //     drop(core);
-        //     if socket.is_active() {
-        //         Self::bind(self.local_addr);
-        //         println!("accepted connection");
-        //         stream = SmolTcpStream {
-        //             socket_handle: self.socket_handle,
-        //             local_addr: self.local_addr,
-        //             port: self.port,
-        //         };
-        //         // the socket addr returned is that of the remote endpoint. ie. the client.
-        //         let remote = socket.remote_endpoint().unwrap();
-        //         let remote_addr = SocketAddr::from((remote.addr, remote.port));
-        //         return Ok((stream, remote_addr));
-        //     }
-        // }
-        if socket.is_active() {
-            let _ = Self::bind(self.local_addr);
-            println!("accept() socket active");
-            if socket.can_recv() {
-                println!("accept() can recv data");
-            }
-            let remote = socket.remote_endpoint().unwrap();
-            let remote_addr = SocketAddr::from((remote.addr, remote.port));
-            stream = SmolTcpStream {
-                socket_handle: self.socket_handle,
-                local_addr: self.local_addr,
-                port: self.port,
-            };
-            return Ok((stream, remote_addr));
-        }
+        let mut socket: &mut Socket<'static>;
+        // let mut core = (*engine).core.lock().unwrap();
+        // let socket = core.get_mutable_socket(self.socket_handle);
+        loop {
+            {
+                let mut core = (*engine).core.lock().unwrap();
+                core.poll(&engine.condvar);
+            } // mutex drops here
+            {
+                let mut core = (*engine).core.lock().unwrap();
+                socket = core.get_mutable_socket(self.socket_handle);
+                if socket.is_active() {
+                    let remote = socket.remote_endpoint().unwrap();
+                    drop(core);
+                    let _ = Self::bind(self.local_addr);
+                    println!("accepted connection");
+                    stream = SmolTcpStream {
+                        socket_handle: self.socket_handle,
+                        local_addr: self.local_addr,
+                        port: self.port,
+                    };
+                    // the socket addr returned is that of the remote endpoint. ie. the client.
+                    let remote_addr = SocketAddr::from((remote.addr, remote.port));
+                    return Ok((stream, remote_addr));
+                }
+            } // mutex drops here
 
-        // }
+            // if socket.is_active() {
+            //     let _ = Self::bind(self.local_addr);
+            //     println!("accept() socket active");
+            //     if socket.can_recv() {
+            //         println!("accept() can recv data");
+            //     }
+            //     let remote = socket.remote_endpoint().unwrap();
+            //     let remote_addr = SocketAddr::from((remote.addr, remote.port));
+            //     stream = SmolTcpStream {
+            //         socket_handle: self.socket_handle,
+            //         local_addr: self.local_addr,
+            //         port: self.port,
+            //     };
+            //     return Ok((stream, remote_addr));
+            // }
+        }
 
         // the socket addr returned is that of the remote endpoint. ie. the client.
 
@@ -339,7 +327,6 @@ impl SmolTcpStream {
                 .push(IpCidr::new(IpAddress::v4(127, 0, 0, 1), 8))
                 .unwrap();
         });
-        println!("here?");
         // let mut core = (*engine).core.lock().unwrap();
         // engine.blocking (|core| {
 
@@ -349,17 +336,12 @@ impl SmolTcpStream {
             (IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1234),
             49152,
         ); // make sure remote endpoint matches the server address
-        println!("here2");
         let handle = (*engine).add_socket(sock);
-        println!("here3");
-        match error {
-            Err(e) => {
-                println!("connect(): connection error!! {}", e);
-                return Err(Error::other("connection error"));
-            }
-            Ok(()) => {
-                println!("ok");
-            }
+        if let Err(e) = error {
+            println!("connect(): connection error!! {}", e);
+            return Err(Error::other("connection error"));
+        } else {
+            // success
         }
         let tcp = SmolTcpStream {
             socket_handle: handle,
@@ -402,8 +384,9 @@ make_listener:
 */
 #[cfg(test)]
 mod tests {
-    use crate::shim::SmolTcpListener;
     use std::net::SocketAddr;
+
+    use crate::shim::SmolTcpListener;
     #[test]
     fn make_listener() {
         let listener = SmolTcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 443))).unwrap();
