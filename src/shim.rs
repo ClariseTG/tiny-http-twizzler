@@ -6,9 +6,9 @@ use std::{
 
 use lazy_static::lazy_static;
 use smoltcp::{
-    iface::{Config, Interface, SocketHandle, SocketSet},
+    iface::{Config, Context, Interface, SocketHandle, SocketSet},
     phy::{Loopback, Medium},
-    socket::tcp::{ListenError, Socket},
+    socket::tcp::{ConnectError, ListenError, Socket},
     storage::RingBuffer,
     time::Instant,
     wire::{EthernetAddress, IpAddress, IpCidr},
@@ -113,7 +113,8 @@ pub struct SmolTcpListener {
 }
 
 impl SmolTcpListener {
-    /* each_addr
+    /* each_addr():
+     * parameters:
      * helper function for bind()
      * processes each address given to see whether it can implement ToSocketAddr, then tries to
      * listen on that addr keeps trying each address until one of them successfully listens
@@ -194,8 +195,6 @@ impl SmolTcpListener {
         let engine = &ENGINE;
         let stream;
         let mut socket: &mut Socket<'static>;
-        // let mut core = (*engine).core.lock().unwrap();
-        // let socket = core.get_mutable_socket(self.socket_handle);
         loop {
             {
                 let mut core = (*engine).core.lock().unwrap();
@@ -219,40 +218,9 @@ impl SmolTcpListener {
                     return Ok((stream, remote_addr));
                 }
             } // mutex drops here
-
-            // if socket.is_active() {
-            //     let _ = Self::bind(self.local_addr);
-            //     println!("accept() socket active");
-            //     if socket.can_recv() {
-            //         println!("accept() can recv data");
-            //     }
-            //     let remote = socket.remote_endpoint().unwrap();
-            //     let remote_addr = SocketAddr::from((remote.addr, remote.port));
-            //     stream = SmolTcpStream {
-            //         socket_handle: self.socket_handle,
-            //         local_addr: self.local_addr,
-            //         port: self.port,
-            //     };
-            //     return Ok((stream, remote_addr));
-            // }
         }
-
-        // the socket addr returned is that of the remote endpoint. ie. the client.
-
+        // how are we handling error cases? should there be some sort of a timeout?
         return Err(Error::other("accepting error"));
-
-        // engine.blocking(|core| {
-        //     println!("get here");
-        //     let socket = (*core).get_mutable_socket(self.socket_handle);
-        //     // FIXME is_active never returns
-        //     if socket.is_active() {
-        //         drop(*core);
-        //         Some(())
-        //     } else {
-        //         drop(*core);
-        //         None
-        //     }
-        // });
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr, Error> {
@@ -311,14 +279,50 @@ impl From<SmolTcpStream> for SmolTcpStream {
 }
 
 impl SmolTcpStream {
-    /// Opens a TCP connection to a remote host.
+    /* each_addr:
+     * helper function for connect()
+     * processes each address given to see whether it can implement ToSocketAddr, then tries to
+     * connect to that addr keeps trying each address until one of them successfully connects
+     * parameters: addresses passed into connect(), reference to socket, reference to
+     * interface context, and port.
+     * return: port and address
+     */
+    fn each_addr<A: ToSocketAddrs>(
+        sock_addrs: A,
+        s: &mut Socket<'static>,
+        cx: &mut Context,
+        port: u16,
+    ) -> Result<(), ConnectError> {
+        let addrs = {
+            match sock_addrs.to_socket_addrs() {
+                Ok(addrs) => addrs,
+                Err(e) => return Err(ConnectError::InvalidState),
+            }
+        };
+        for addr in addrs {
+            match (*s).connect(cx, addr, port) {
+                Ok(_) => return Ok(()),
+                Err(_) => return Err(ConnectError::Unaddressable),
+            }
+        }
+        Err(ConnectError::InvalidState) // is that the correct thing to return?
+    }
+    /* connect():
+     * parameters: address(es) a list of addresses may be given
+     * return: a smoltcpstream that is connected to the remote server.
+     */
     /// addr is an address of the remote host.
     pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<SmolTcpStream, Error> {
         println!("in connect()");
-        let engine = &ENGINE;
-        let rx_buffer = SocketBuffer::new(Vec::new());
-        let tx_buffer = SocketBuffer::new(Vec::new());
-        let mut sock = Socket::new(rx_buffer, tx_buffer);
+        let engine = &ENGINE; // accessing global engine
+        let mut sock = {
+            // create new socket
+            let rx_buffer = SocketBuffer::new(Vec::new());
+            let tx_buffer = SocketBuffer::new(Vec::new());
+            Socket::new(rx_buffer, tx_buffer)
+        };
+        // TODO: don't hardcode in port. make ephemeral port.
+        let PORT = 49152;
         let config = Config::new(EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).into()); // change later?
         let mut device = Loopback::new(Medium::Ethernet);
         let mut iface = Interface::new(config, &mut device, Instant::now());
@@ -327,39 +331,69 @@ impl SmolTcpStream {
                 .push(IpCidr::new(IpAddress::v4(127, 0, 0, 1), 8))
                 .unwrap();
         });
-        // let mut core = (*engine).core.lock().unwrap();
-        // engine.blocking (|core| {
-
-        // });
-        let error = sock.connect(
-            iface.context(),
-            (IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1234),
-            49152,
-        ); // make sure remote endpoint matches the server address
-        let handle = (*engine).add_socket(sock);
-        if let Err(e) = error {
+        if let Err(e) = Self::each_addr(addr, &mut sock, iface.context(), PORT) {
             println!("connect(): connection error!! {}", e);
             return Err(Error::other("connection error"));
         } else {
             // success
-        }
-        let tcp = SmolTcpStream {
+        }; // note to self: make sure remote endpoint matches the server address!
+        let handle = (*engine).add_socket(sock);
+        let smoltcpstream = SmolTcpStream {
             socket_handle: handle,
-            port: 49152,
-            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 49152),
+            port: PORT,
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), PORT),
         };
-        Ok(tcp)
+        Ok(smoltcpstream)
     }
 
+    /* peer_addr():
+     * parameters: -
+     * return: the remote address of the socket. this is the address of the server
+     * note: can only be used if already connected
+     */
     pub fn peer_addr(&self) -> Result<SocketAddr, Error> {
-        todo!()
+        let engine = &ENGINE;
+        let mut core = (*engine).core.lock().unwrap();
+        let socket = core.get_socket(self.socket_handle);
+        let remote = socket.remote_endpoint().unwrap();
+        drop(core);
+        let remote_addr = SocketAddr::from((remote.addr, remote.port));
+        Ok(remote_addr)
+        // TODO: add error handling
     }
 
+    /* shutdown_write():
+     * helper function for shutdown()
+     */
+    fn shutdown_write(socket: &mut Socket<'static>) {
+        socket.close(); // close() only closes the transmit half of the connection
+    }
+    /* shutdown_read():
+     * helper function for shutdown()
+     */
+    fn shutdown_read(socket: &mut Socket<'static>) {
+        socket.abort();
+        // abort() immediately aborts the connection and closes the socket, sends a reset packet to
+        // the remote endpoint
+    }
+    /* shutdown():
+     * parameters: how - an enum of Shutdown that specifies what part of the socket to shutdown.
+     *             options are Read, Write, or Both.
+     * return: Result<> indicating success, (), or failure, Error
+     */
+    /* TODO: this really is an issue for later rather than sooner, but
+    ASK DANIEL how he plans to handle this for Twizzler:
+
+    "Calling this function multiple times may result in different behavior,
+    depending on the operating system. On Linux, the second call will
+    return `Ok(())`, but on macOS, it will return `ErrorKind::NotConnected`.
+    This may change in the future." -- std::net documentation
+    */
     pub fn shutdown(&self, how: Shutdown) -> Result<(), Error> {
         // specifies shutdown of read, write, or both with an enum.
-        // write half shutdown with close().
+        // write shutdown with close().
         // both with abort() though this will send a reset packet
-        // TODO: what to do for read half?
+        // TODO: what to do for read ?
         match how {
             Shutdown::Read => {}
             Shutdown::Write => {}
