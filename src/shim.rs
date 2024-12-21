@@ -166,15 +166,9 @@ pub struct SmolTcpStream {
 
 impl Read for &SmolTcpStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-    // check if the socket can even recieve
-    //if may_recv(&self) {
-    //    println!("Can recieve!");
-        // call recv on up to the size of the buffer + load it
-        // return recv's f
-    //} else {
-    //    println!("Cannot recieve :(");
-    //}
-    unsupported()
+        let engine = &ENGINE;
+        let socket = engine.get_mutable_socket(self.socket_handle);
+        socket.recv_slice(buf)
     }
 }
 
@@ -190,44 +184,14 @@ impl Write for &SmolTcpStream {
         // must be a complication. talk to her about it.
         let socket = engine.get_mutable_socket(self.socket_handle);
         
-        // throw what you can in the xmit buffer...
-        if (socket.may_send()){
-            // TODO: this might just work since send() returns
-            // a Result<usize, SendError> and write wants a Result<usize>
-            // but the errors might be incompatible so well see
-            //
-            // ...and return the result from send()
-            socket.send(buf)
-        } else {
-            // TODO: throw invalid state error
-        }
-
-        
+        socket.send_slice(buf)
     }
-    // flush
+    /// Flushes this output stream, ensuring that all
+    /// intermediately buffered contents reach their destination.
+    //  (according to the docs)
     pub fn flush(&mut self) -> Result<(), Error> {
-        // needs to make sure the output buffer is empty... 
-        //      maybe a loop of checking can_send until it's false?
-        // have to check how the buffer is emptied. it seems automatic?
-        unsupported()
-        /*
-        // while (there is still data to send) {
-            // checks if:
-            // -> conn. is open
-            // -> xmit buffer not full
-            if (socket.can_send()) {
-            // call send on buffer, then return f from send
-                // instead of buf, make a buffer that holds whats
-                // LEFT to send, instead of all of it. that way we can
-                // drip-feed the socket until everything we need gets sent.
-                socket.send_slice(buf).unwrap();
-            }
-            // TODO
-            // if (!may_send){
-                // throw invalid state error
-            // }
-        //}
-        */
+        // presumably blocks until the buffer is empty?
+        // is there anything else that needs to get done there?
     }
 
 
@@ -235,19 +199,59 @@ impl Write for &SmolTcpStream {
 
 impl SmolTcpStream {
 
+    // helper fn for connect, mirroring ananya's implementation of bind
+    // TODO: not tested.
+    fn do_connect<A: ToSocketAddrs>(addrs: A) ->
+        Result<Socket<'static>, Error> {
+        // initializing the buffers for the stream    
+        let rx_buffer = SocketBuffer::new(Vec::new());
+        let tx_buffer = SocketBuffer::new(Vec::new());
+        // initializing the socket
+        let mut socket: Socket<'static> = Socket::new(rx_buffer, tx_buffer);
+        // copied from ananya's code for now. this has something to do
+        // with listening at/connecting to the first address that works
+        let (port, local_address) = {
+            // each_addr is a helper fn ananya wrote
+            // it just tries connect on each address
+            // if it succeeds, connect has ran, meaning
+            // that the socket is now in stream mode.
+            match Self::each_addr(addrs, &mut socket) {
+                Ok((port, local_address)) => (port, local_address),
+                Err(_) => return Err(Error::other("listening error")),
+            }
+        };
+        Ok((socket, port, local_address))
+
+    }
+
     /// Opens a TCP connection to a remote host.
-    /// addr is an address of the remote host.
+    /// parameter addr is an address of the remote host.
+    // TODO: not tested. this is roughly a copy of ananya's code
     pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<SmolTcpStream, Error> {
-        // probably changing the state of the socket, then doing a poll (for now)
-        //
-        unsupported()
+        let engine = &ENGINE;
+        let (socket, port, local_address) = {
+            match Self::do_connect(addrs) {
+                // return info if successful
+                Ok((socket, port, local_address)) => (socket, port, local_address),
+                Err(_) => {
+                    return Err(Error::other("do_connect failed."))
+                }
+            }
+        }
+        let handle = (*engine).add_socket(sock);
+       
+        // create and return stream now that the hard part's done!
+        stream = SmolTcpStream {
+            socket_handle: handle,
+            local_addr: local_address,
+            port: port,
+        };
+        return Ok(stream)
     }
 
     // peer_addr
     pub fn peer_addr(&self) -> Result<SocketAddr, Error> {
-        // remote_endpoint...?
-        // TODO: what in the WORLD is a peer address i still haven't found the answer
-       unsupported() 
+        unsupported() 
     }
  
     // shutdown
