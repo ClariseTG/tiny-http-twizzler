@@ -241,18 +241,25 @@ pub struct SmolTcpStream {
 }
 impl Read for SmolTcpStream {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
-        // check if the socket can even recieve
-        //if may_recv(&self) {
-        //    println!("Can recieve!");
-        // call recv on up to the size of the buffer + load it
-        // return recv's f
-        //} else {
-        //    println!("Cannot recieve :");
-        //}
-        todo!();
         // "All currently blocked and future reads will return Ok(0)."
         // -- std::net shutdown documentation
         // ^^ check whether the shutdown for read has been called, then return Ok(0)
+        if unsafe { *self.rx_shutdown.get() } == true {
+            return Ok(0);
+        }
+
+        let engine = &ENGINE;
+        let mut core = engine.core.lock().unwrap();
+        let mut socket = core.get_mutable_socket(self.socket_handle);
+
+        let result = socket.recv_slice(buf);
+        // ^^ TODO: verify that recv_slice is best for this
+        if let Ok(i) = result {
+            Ok(i)
+        } else {
+            // error
+            Err(Error::other("read error"))
+        }
     }
 }
 impl Write for SmolTcpStream {
@@ -260,7 +267,18 @@ impl Write for SmolTcpStream {
     fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
         // call can_send
         // call send on buffer, then return f from send
-        todo!();
+        let engine = &ENGINE;
+        let mut core = engine.core.lock().unwrap();
+        let mut socket = core.get_mutable_socket(self.socket_handle);
+        let result = socket.send_slice(buf);
+        // ^^ TODO: verify that send_slice is best for this
+        if let Ok(i) = result {
+            // success
+            Ok(i)
+        } else {
+            // error
+            Err(Error::other("write error"))
+        }
     }
     fn flush(&mut self) -> Result<(), Error> {
         // needs to make sure the output buffer is empty...
@@ -418,7 +436,9 @@ impl SmolTcpStream {
             Shutdown::Read => {
                 // "All currently blocked and future reads will return Ok(0)."
                 // -- std::net shutdown documentation
-
+                // READ the implementation of may_recv at https://docs.rs/smoltcp/latest/src/smoltcp/socket/tcp.rs.html#1104
+                // (*socket).rx_buffer.clear(); <<<--------------------- cannot access private
+                // rx_buffer. how to clear rx_buffer?
                 Self::shutdown_read(&self); // THIS IS A HIGHLY UNSAFE FUNCTION!!
                 return Ok(());
             }
