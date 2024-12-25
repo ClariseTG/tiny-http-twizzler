@@ -1,4 +1,5 @@
 use std::{
+    cell::UnsafeCell,
     io::{Error, Read, Write},
     net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, ToSocketAddrs},
     sync::{Arc, Condvar, Mutex},
@@ -212,6 +213,7 @@ impl SmolTcpListener {
                         socket_handle: self.socket_handle,
                         local_addr: self.local_addr,
                         port: self.port,
+                        rx_shutdown: UnsafeCell::new(false),
                     };
                     // the socket addr returned is that of the remote endpoint. ie. the client.
                     let remote_addr = SocketAddr::from((remote.addr, remote.port));
@@ -235,6 +237,7 @@ pub struct SmolTcpStream {
     socket_handle: SocketHandle,
     local_addr: SocketAddr,
     port: u16,
+    rx_shutdown: UnsafeCell<bool>,
 }
 impl Read for SmolTcpStream {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
@@ -247,6 +250,9 @@ impl Read for SmolTcpStream {
         //    println!("Cannot recieve :");
         //}
         todo!();
+        // "All currently blocked and future reads will return Ok(0)."
+        // -- std::net shutdown documentation
+        // ^^ check whether the shutdown for read has been called, then return Ok(0)
     }
 }
 impl Write for SmolTcpStream {
@@ -342,6 +348,7 @@ impl SmolTcpStream {
             socket_handle: handle,
             port: PORT,
             local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), PORT),
+            rx_shutdown: UnsafeCell::new(false),
         };
         Ok(smoltcpstream)
     }
@@ -368,13 +375,23 @@ impl SmolTcpStream {
     fn shutdown_write(socket: &mut Socket<'static>) {
         socket.close(); // close() only closes the transmit half of the connection
     }
-    /* shutdown_read():
+    /* shutdown_both():
      * helper function for shutdown()
      */
-    fn shutdown_read(socket: &mut Socket<'static>) {
+    fn shutdown_both(socket: &mut Socket<'static>) {
         socket.abort();
         // abort() immediately aborts the connection and closes the socket, sends a reset packet to
         // the remote endpoint
+    }
+    /* shutdown_read():
+     * helper function for shutdown()
+     * THIS IS A HIGHLY UNSAFE FUNCTION!!
+     * special thanks to zertyz from https://stackoverflow.com/questions/54237610/is-there-a-way-to-make-an-immutable-reference-mutable
+     * and to https://doc.rust-lang.org/std/cell/struct.UnsafeCell.html
+     */
+    fn shutdown_read(&self) {
+        let bad_reference = unsafe { &mut *self.rx_shutdown.get() };
+        *bad_reference = true;
     }
     /* shutdown():
      * parameters: how - an enum of Shutdown that specifies what part of the socket to shutdown.
@@ -394,12 +411,26 @@ impl SmolTcpStream {
         // write shutdown with close().
         // both with abort() though this will send a reset packet
         // TODO: what to do for read ?
+        let engine = &ENGINE;
+        let mut core = (*engine).core.lock().unwrap(); // acquire mutex
+        let mut socket = core.get_mutable_socket(self.socket_handle);
         match how {
-            Shutdown::Read => {}
-            Shutdown::Write => {}
-            Shutdown::Both => {}
-        }
-        todo!();
+            Shutdown::Read => {
+                // "All currently blocked and future reads will return Ok(0)."
+                // -- std::net shutdown documentation
+
+                Self::shutdown_read(&self); // THIS IS A HIGHLY UNSAFE FUNCTION!!
+                return Ok(());
+            }
+            Shutdown::Write => {
+                Self::shutdown_write(&mut socket);
+                return Ok(());
+            } // mutex drops here
+            Shutdown::Both => {
+                Self::shutdown_both(&mut socket);
+                return Ok(());
+            } // mutex drops here
+        } // mutex drops here if shutdown(read)
     }
 
     pub fn try_clone(&self) -> Result<SmolTcpStream, Error> {
