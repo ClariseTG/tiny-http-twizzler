@@ -139,9 +139,11 @@ impl SmolTcpListener {
         Err(ListenError::InvalidState) // is that the correct thing to return?
     }
     fn do_bind<A: ToSocketAddrs>(addrs: A) -> Result<(Socket<'static>, u16, SocketAddr), Error> {
-        let rx_buffer = SocketBuffer::new(Vec::new());
-        let tx_buffer = SocketBuffer::new(Vec::new());
-        let mut sock: Socket<'static> = Socket::new(rx_buffer, tx_buffer); // this is the listening socket
+        let mut sock = {
+            let rx_buffer = SocketBuffer::new(Vec::new());
+            let tx_buffer = SocketBuffer::new(Vec::new());
+            Socket::new(rx_buffer, tx_buffer) // this is the listening socket
+        };
         let (port, local_address) = {
             match Self::each_addr(addrs, &mut sock) {
                 Ok((port, local_address)) => (port, local_address),
@@ -172,7 +174,7 @@ impl SmolTcpListener {
                 }
             }
         };
-        println!("in bind");
+        println!("shim: in bind()");
         let handle = (*engine).add_socket(sock);
         // allocate a queue to hold pending connection requests. sounds like a semaphore
         let tcp = SmolTcpListener {
@@ -191,7 +193,7 @@ impl SmolTcpListener {
     pub fn accept(&self) -> Result<(SmolTcpStream, SocketAddr), Error> {
         // create another socket to listen on the same port and use that as a listener
         // we can have multiple sockets listening on the same port
-        println!("in accept");
+        println!("shim: in accept()");
         // this is the listener
         let engine = &ENGINE;
         let stream;
@@ -207,8 +209,7 @@ impl SmolTcpListener {
                 if socket.is_active() {
                     let remote = socket.remote_endpoint().unwrap();
                     drop(core);
-                    let _ = Self::bind(self.local_addr);
-                    println!("accepted connection");
+                    println!("shim: accepted connection; in accept()");
                     stream = SmolTcpStream {
                         socket_handle: self.socket_handle,
                         local_addr: self.local_addr,
@@ -217,6 +218,9 @@ impl SmolTcpListener {
                     };
                     // the socket addr returned is that of the remote endpoint. ie. the client.
                     let remote_addr = SocketAddr::from((remote.addr, remote.port));
+                    // maybe assign self to the new bind call
+                    let mut unsafe_self = UnsafeCell::new(self);
+                    *(unsafe_self.get_mut()) = &(Self::bind(self.local_addr).unwrap());
                     return Ok((stream, remote_addr));
                 }
             } // mutex drops here
@@ -251,10 +255,11 @@ impl Read for SmolTcpStream {
         let engine = &ENGINE;
         let mut core = engine.core.lock().unwrap();
         let mut socket = core.get_mutable_socket(self.socket_handle);
-
         let result = socket.recv_slice(buf);
+        drop(core);
         // ^^ TODO: verify that recv_slice is best for this
         if let Ok(i) = result {
+            println!("shim: read: success: {i}");
             Ok(i)
         } else {
             // error
@@ -271,9 +276,11 @@ impl Write for SmolTcpStream {
         let mut core = engine.core.lock().unwrap();
         let mut socket = core.get_mutable_socket(self.socket_handle);
         let result = socket.send_slice(buf);
+        drop(core);
         // ^^ TODO: verify that send_slice is best for this
         if let Ok(i) = result {
             // success
+            println!("shim: write: success: {i}");
             Ok(i)
         } else {
             // error
@@ -281,10 +288,10 @@ impl Write for SmolTcpStream {
         }
     }
     fn flush(&mut self) -> Result<(), Error> {
-        // needs to make sure the output buffer is empty...
-        //      maybe a loop of checking can_send until it's false?
-        // have to check how the buffer is emptied. it seems automatic?
-        todo!()
+        Ok(())
+        // idk this is what std::net::TcpStream::flush() does: 
+        // https://doc.rust-lang.org/src/std/net/tcp.rs.html#695
+        // also smoltcp doesn't have a flush method for its
     }
 }
 pub trait From<SmolTcpStream> {
@@ -337,7 +344,7 @@ impl SmolTcpStream {
      */
     /// addr is an address of the remote host.
     pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<SmolTcpStream, Error> {
-        println!("in connect()");
+        println!("shim: in connect()");
         let engine = &ENGINE; // accessing global engine
         let mut sock = {
             // create new socket
@@ -454,9 +461,10 @@ impl SmolTcpStream {
     }
 
     pub fn try_clone(&self) -> Result<SmolTcpStream, Error> {
-        // use try_from on all of the contained elements?
-        // more doc reading necessary
-        todo!()
+        // more doc reading necessary?
+        todo!();
+        let handle = self.socket_handle.clone();
+        Ok(SmolTcpStream { socket_handle: handle, local_addr: self.local_addr, port: self.port, rx_shutdown: UnsafeCell::new(unsafe{*self.rx_shutdown.get()}) })
     }
 }
 // implement impl std::fmt::Debug for SmolTcpStream
