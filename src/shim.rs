@@ -40,7 +40,7 @@ impl Engine {
     fn add_socket(&self, socket: Socket<'static>) -> SocketHandle {
         self.core.lock().unwrap().add_socket(socket)
     }
-    // fns to get sockets
+    // functions to get sockets
     // Block until f returns Some(R), and then return R. Note that f may be called multiple times,
     // and it may be called spuriously.
     fn blocking<R>(&self, mut f: impl FnMut(&mut Core) -> Option<R>) -> R {
@@ -75,7 +75,7 @@ impl Core {
         let mut iface = Interface::new(config, &mut device, Instant::now());
         iface.update_ip_addrs(|ip_addrs| {
             ip_addrs
-                .push(IpCidr::new(IpAddress::v4(127, 0, 0, 1), 8))
+                .push(IpCidr::new(IpAddress::v4(127, 0, 0, 1), 9))
                 .unwrap();
         });
         Self {
@@ -139,8 +139,8 @@ impl SmolTcpListener {
     }
     fn do_bind<A: ToSocketAddrs>(addrs: A) -> Result<(Socket<'static>, u16, SocketAddr), Error> {
         let mut sock = {
-            let rx_buffer = SocketBuffer::new(Vec::with_capacity(4096));
-            let tx_buffer = SocketBuffer::new(Vec::with_capacity(4096));
+            let rx_buffer = SocketBuffer::new(vec![0; 4096]);
+            let tx_buffer = SocketBuffer::new(vec![0; 4096]);
             Socket::new(rx_buffer, tx_buffer) // this is the listening socket
         };
         let (port, local_address) = {
@@ -196,6 +196,11 @@ impl SmolTcpListener {
     // create a new socket for tcpstream
     // ^^ creating a new one so that the user can call accept() on the previous one again
     // return tcpstream
+    /* accept():
+     * parameters: -
+     * return: (SmolTcpStream, SocketAddr) upon success; Error upon failure
+     * takes the current listener and advances the socket's state (in terms of the smoltcp state machine)
+     */
     pub fn accept(&self) -> Result<(SmolTcpStream, SocketAddr), Error> {
         // create another socket to listen on the same port and use that as a listener
         // we can have multiple sockets listening on the same port
@@ -240,7 +245,7 @@ impl SmolTcpListener {
         return Ok(self.local_addr);
     }
 }
-
+//@ananya: you are ugly you two-faced devil. -sanjana
 #[derive(Debug)]
 pub struct SmolTcpStream {
     socket_handle: SocketHandle,
@@ -260,10 +265,10 @@ impl Read for SmolTcpStream {
         let mut core = engine.core.lock().unwrap();
         let socket = core.get_mutable_socket(self.socket_handle);
         let result = socket.recv_slice(buf);
-        println!(" - {}", String::from_utf8((buf).to_vec()).unwrap());
+        // println!(" - {}", String::from_utf8((buf).to_vec()).unwrap());
         drop(core);
         if let Ok(res) = result {
-            println!("shim: read: success: {res}");
+            // println!("shim: read: success: {res}");
             Ok(res)
         } else {
             // error
@@ -281,7 +286,8 @@ impl Write for SmolTcpStream {
         drop(core);
         if let Ok(res) = result {
             // success
-            println!("shim: write: success: {res}");
+            // println!("shim: wrote: {res} bytes:");
+            // println!("{}", String::from_utf8((buf).to_vec()).unwrap());
             Ok(res)
         } else {
             // error
