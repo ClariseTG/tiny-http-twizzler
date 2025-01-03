@@ -1,5 +1,4 @@
 use std::{
-    cell::UnsafeCell,
     io::{Error, Read, Write},
     net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, ToSocketAddrs},
     sync::{Arc, Condvar, Mutex},
@@ -108,7 +107,7 @@ impl Core {
 
 // a variant of std's tcplistener using smoltcp's api
 pub struct SmolTcpListener {
-    socket_handle: SocketHandle,
+    socket_handle: Arc<Mutex<SocketHandle>>,
     local_addr: SocketAddr,
     port: u16,
 }
@@ -140,8 +139,8 @@ impl SmolTcpListener {
     }
     fn do_bind<A: ToSocketAddrs>(addrs: A) -> Result<(Socket<'static>, u16, SocketAddr), Error> {
         let mut sock = {
-            let rx_buffer = SocketBuffer::new(Vec::new());
-            let tx_buffer = SocketBuffer::new(Vec::new());
+            let rx_buffer = SocketBuffer::new(Vec::with_capacity(4096));
+            let tx_buffer = SocketBuffer::new(Vec::with_capacity(4096));
             Socket::new(rx_buffer, tx_buffer) // this is the listening socket
         };
         let (port, local_address) = {
@@ -174,17 +173,24 @@ impl SmolTcpListener {
                 }
             }
         };
-        println!("shim: in bind()");
+        // println!("shim: in bind()");
         let handle = (*engine).add_socket(sock);
-        // allocate a queue to hold pending connection requests. sounds like a semaphore
+        // for later work: allocate a queue to hold pending connection requests. sounds like a semaphore?
         let tcp = SmolTcpListener {
-            socket_handle: handle,
+            socket_handle: Arc::new(Mutex::new(handle)),
             port,
             local_addr: local_address,
         };
         Ok(tcp)
     }
-
+    fn get_handle(&self) -> SocketHandle {
+        let handle = self.socket_handle.lock().unwrap();
+        *handle
+    }
+    fn change_handle(&self, new_handle: SocketHandle) {
+        let mut handle = self.socket_handle.lock().unwrap();
+        *handle = new_handle;
+    }
     // accept
     // block until there is a waiting connection in the queue
     // create a new socket for tcpstream
@@ -202,25 +208,24 @@ impl SmolTcpListener {
             {
                 let mut core = (*engine).core.lock().unwrap();
                 core.poll(&engine.condvar);
-            } // mutex drops here
-            {
-                let mut core = (*engine).core.lock().unwrap();
-                socket = core.get_mutable_socket(self.socket_handle);
+                socket = core.get_mutable_socket(self.get_handle());
                 if socket.is_active() {
                     let remote = socket.remote_endpoint().unwrap();
                     drop(core);
                     println!("shim: accepted connection; in accept()");
                     stream = SmolTcpStream {
-                        socket_handle: self.socket_handle,
+                        socket_handle: self.get_handle(),
                         local_addr: self.local_addr,
                         port: self.port,
-                        rx_shutdown: UnsafeCell::new(false),
+                        rx_shutdown: Arc::new(Mutex::new(false)),
                     };
                     // the socket addr returned is that of the remote endpoint. ie. the client.
                     let remote_addr = SocketAddr::from((remote.addr, remote.port));
-                    // maybe assign self to the new bind call
-                    let mut unsafe_self = UnsafeCell::new(self);
-                    *(unsafe_self.get_mut()) = &(Self::bind(self.local_addr).unwrap());
+                    { // creating another listener and changing the value of the socket handle in self
+                        let next_list = (Self::bind(self.local_addr).unwrap());
+                        Self::change_handle(&self, next_list.get_handle());
+                    }
+
                     return Ok((stream, remote_addr));
                 }
             } // mutex drops here
@@ -241,26 +246,25 @@ pub struct SmolTcpStream {
     socket_handle: SocketHandle,
     local_addr: SocketAddr,
     port: u16,
-    rx_shutdown: UnsafeCell<bool>,
+    rx_shutdown: Arc<Mutex<bool>>,
 }
 impl Read for SmolTcpStream {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
         // "All currently blocked and future reads will return Ok(0)."
         // -- std::net shutdown documentation
         // ^^ check whether the shutdown for read has been called, then return Ok(0)
-        if unsafe { *self.rx_shutdown.get() } == true {
+        if self.get_rx_shutdown() == true {
             return Ok(0);
         }
-
         let engine = &ENGINE;
         let mut core = engine.core.lock().unwrap();
-        let mut socket = core.get_mutable_socket(self.socket_handle);
+        let socket = core.get_mutable_socket(self.socket_handle);
         let result = socket.recv_slice(buf);
+        println!(" - {}", String::from_utf8((buf).to_vec()).unwrap());
         drop(core);
-        // ^^ TODO: verify that recv_slice is best for this
-        if let Ok(i) = result {
-            println!("shim: read: success: {i}");
-            Ok(i)
+        if let Ok(res) = result {
+            println!("shim: read: success: {res}");
+            Ok(res)
         } else {
             // error
             Err(Error::other("read error"))
@@ -270,18 +274,15 @@ impl Read for SmolTcpStream {
 impl Write for SmolTcpStream {
     // write
     fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
-        // call can_send
-        // call send on buffer, then return f from send
         let engine = &ENGINE;
         let mut core = engine.core.lock().unwrap();
-        let mut socket = core.get_mutable_socket(self.socket_handle);
+        let socket = core.get_mutable_socket(self.socket_handle);
         let result = socket.send_slice(buf);
         drop(core);
-        // ^^ TODO: verify that send_slice is best for this
-        if let Ok(i) = result {
+        if let Ok(res) = result {
             // success
-            println!("shim: write: success: {i}");
-            Ok(i)
+            println!("shim: write: success: {res}");
+            Ok(res)
         } else {
             // error
             Err(Error::other("write error"))
@@ -348,8 +349,8 @@ impl SmolTcpStream {
         let engine = &ENGINE; // accessing global engine
         let mut sock = {
             // create new socket
-            let rx_buffer = SocketBuffer::new(Vec::new());
-            let tx_buffer = SocketBuffer::new(Vec::new());
+            let rx_buffer = SocketBuffer::new(vec![0; 4096]);
+            let tx_buffer = SocketBuffer::new(vec![0; 4096]);
             Socket::new(rx_buffer, tx_buffer)
         };
         // TODO: don't hardcode in port. make ephemeral port.
@@ -373,7 +374,7 @@ impl SmolTcpStream {
             socket_handle: handle,
             port: PORT,
             local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), PORT),
-            rx_shutdown: UnsafeCell::new(false),
+            rx_shutdown: Arc::new(Mutex::new(false)),
         };
         Ok(smoltcpstream)
     }
@@ -410,13 +411,13 @@ impl SmolTcpStream {
     }
     /* shutdown_read():
      * helper function for shutdown()
-     * THIS IS A HIGHLY UNSAFE FUNCTION!!
-     * special thanks to zertyz from https://stackoverflow.com/questions/54237610/is-there-a-way-to-make-an-immutable-reference-mutable
-     * and to https://doc.rust-lang.org/std/cell/struct.UnsafeCell.html
      */
     fn shutdown_read(&self) {
-        let bad_reference = unsafe { &mut *self.rx_shutdown.get() };
-        *bad_reference = true;
+        let mut read_shutdown = self.rx_shutdown.lock().unwrap();
+        *read_shutdown = true;
+    }
+    fn get_rx_shutdown(&self) -> bool {
+        *self.rx_shutdown.lock().unwrap()
     }
     /* shutdown():
      * parameters: how - an enum of Shutdown that specifies what part of the socket to shutdown.
@@ -424,7 +425,7 @@ impl SmolTcpStream {
      * return: Result<> indicating success, (), or failure, Error
      */
     /* TODO: this really is an issue for later rather than sooner, but
-    ASK DANIEL how he plans to handle this for Twizzler:
+    ASK DANIEL how he wants to handle this for Twizzler:
 
     "Calling this function multiple times may result in different behavior,
     depending on the operating system. On Linux, the second call will
@@ -432,10 +433,7 @@ impl SmolTcpStream {
     This may change in the future." -- std::net documentation
     */
     pub fn shutdown(&self, how: Shutdown) -> Result<(), Error> {
-        // specifies shutdown of read, write, or both with an enum.
-        // write shutdown with close().
-        // both with abort() though this will send a reset packet
-        // TODO: what to do for read ?
+        // specifies shutdown of read, write, or both with enum Shutdown
         let engine = &ENGINE;
         let mut core = (*engine).core.lock().unwrap(); // acquire mutex
         let mut socket = core.get_mutable_socket(self.socket_handle);
@@ -446,7 +444,7 @@ impl SmolTcpStream {
                 // READ the implementation of may_recv at https://docs.rs/smoltcp/latest/src/smoltcp/socket/tcp.rs.html#1104
                 // (*socket).rx_buffer.clear(); <<<--------------------- cannot access private
                 // rx_buffer. how to clear rx_buffer?
-                Self::shutdown_read(&self); // THIS IS A HIGHLY UNSAFE FUNCTION!!
+                Self::shutdown_read(&self);
                 return Ok(());
             }
             Shutdown::Write => {
@@ -462,9 +460,14 @@ impl SmolTcpStream {
 
     pub fn try_clone(&self) -> Result<SmolTcpStream, Error> {
         // more doc reading necessary?
-        todo!();
+        // todo!();
         let handle = self.socket_handle.clone();
-        Ok(SmolTcpStream { socket_handle: handle, local_addr: self.local_addr, port: self.port, rx_shutdown: UnsafeCell::new(unsafe{*self.rx_shutdown.get()}) })
+        Ok(SmolTcpStream { 
+            socket_handle: handle, 
+            local_addr: self.local_addr, 
+            port: self.port, 
+            rx_shutdown: Arc::new(Mutex::new(self.get_rx_shutdown())) 
+        })
     }
 }
 // implement impl std::fmt::Debug for SmolTcpStream
