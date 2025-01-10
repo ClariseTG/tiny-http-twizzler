@@ -3,7 +3,7 @@ MODIFIED FILES:
 shim.rs
 ../test/shim-test.rs
 connection.rs
-lib.rs
+lib.rs (also important in lib.rs = commented out forbidding unsafe code)
 ../Cargo.toml
 ../../Cargo.toml
 example_httpclient.rs <-- CREATED
