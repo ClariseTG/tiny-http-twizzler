@@ -1,7 +1,7 @@
 use std::{
     io::{Error, Read, Write},
     net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, ToSocketAddrs},
-    sync::{Arc, Condvar, Mutex},
+    sync::{mpsc, Arc, Condvar, Mutex}, thread::JoinHandle,
 };
 
 use lazy_static::lazy_static;
@@ -10,15 +10,17 @@ use smoltcp::{
     phy::{Loopback, Medium},
     socket::tcp::{ConnectError, ListenError, Socket},
     storage::RingBuffer,
-    time::Instant,
+    time::{Instant, Duration},
     wire::{EthernetAddress, IpAddress, IpCidr},
 };
-// use tracing;
+// use tracing::Level;
 
 pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
 pub struct Engine {
     core: Arc<Mutex<Core>>,
-    condvar: Arc<Condvar>,
+    waiter: Arc<Condvar>,
+    channel: mpsc::Sender<()>,
+    _polling_thread: JoinHandle<()>
 }
 struct Core {
     socketset: SocketSet<'static>,
@@ -32,38 +34,79 @@ lazy_static! {
 
 impl Engine {
     fn new() -> Self {
+        // thank you to daniel for his code: https://github.com/dbittman/smoltcp-test/blob/f866cb22a35de18d3a7a28d14e10044b45a87c6c/src/main.rs#L240
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let core = Arc::new(Mutex::new(Core::new()));
+        let waiter = Arc::new(Condvar::new());
+        let _inner = core.clone();
+        let _waiter = waiter.clone();
+
+        // Okay, here is our background polling thread. It polls the network interface with the SocketSet
+        // whenever it needs to, which is:
+        // 1. when smoltcp says to based on poll_time() (calls poll_delay internally)
+        // 2. when the state changes (eg a new socket is added)
+        // 3. when blocking threads need to poll (we get a message on the channel)
+        let thread = std::thread::spawn(move || {
+            let inner = _inner;
+            let waiter = _waiter;
+            loop {
+                let time = {
+                    let mut inner = inner.lock().unwrap();
+                    let time = inner.poll_time();
+
+                    // We may need to poll immediately!
+                    if matches!(time, Some(Duration::ZERO)) {
+                        // tracing::trace!("poll thread polling");
+                        inner.poll(&*waiter);
+                        continue;
+                    }
+                    time
+                };
+
+                // Wait until the designated timeout, or until we get a message on the channel.
+                match time {
+                    Some(dur) => {
+                        let _ = receiver.recv_timeout(dur.into());
+                    }
+                    None => {
+                        receiver.recv().unwrap();
+                    }
+                }
+            }
+        });
         Self {
-            core: Arc::new(Mutex::new(Core::new())),
-            condvar: Arc::new(Condvar::new()),
+            core: core,
+            waiter: waiter,
+            channel: sender,
+            _polling_thread: thread,
         }
     }
     fn add_socket(&self, socket: Socket<'static>) -> SocketHandle {
         self.core.lock().unwrap().add_socket(socket)
     }
-    // functions to get sockets
-    // Block until f returns Some(R), and then return R. Note that f may be called multiple times,
-    // and it may be called spuriously.
+    // Block until f returns Some(R), and then return R. Note that f may be called multiple times, and it may
+    // be called spuriously.
     fn blocking<R>(&self, mut f: impl FnMut(&mut Core) -> Option<R>) -> R {
-        let mut inner = self.core.lock().unwrap();
-        println!("blocking(): polling from blocking");
+        let mut core = self.core.lock().unwrap();
+        // tracing::trace!("polling from blocking");
         // Immediately poll, since we wait to have as up-to-date state as possible.
-        inner.poll(&self.condvar);
+        core.poll(&self.waiter);
         loop {
             // We'll need the polling thread to wake up and do work.
-            // self.channel.send(()).unwrap();
-            match f(&mut *inner) {
+            self.channel.send(()).unwrap();
+            match f(&mut *core) {
                 Some(r) => {
                     // We have done work, so again, notify the polling thread.
-                    // self.channel.send(()).unwrap();
+                    self.channel.send(()).unwrap();
+                    drop(core);
                     return r;
                 }
                 None => {
-                    println!("blocking(): blocking thread");
-                    inner = self.condvar.wait(inner).unwrap();
+                    // tracing::trace!("blocking thread");
+                    core = self.waiter.wait(core).unwrap();
                 }
             }
         }
-        // mutex dropped here.
     }
 }
 
@@ -79,9 +122,9 @@ impl Core {
                 .unwrap();
         });
         Self {
-            socketset,
-            device,
-            iface,
+            socketset: socketset,
+            device: device,
+            iface: iface,
         }
     }
     fn add_socket(&mut self, sock: Socket<'static>) -> SocketHandle {
@@ -93,15 +136,17 @@ impl Core {
     fn get_mutable_socket(&mut self, handle: SocketHandle) -> &mut Socket<'static> {
         self.socketset.get_mut(handle)
     }
+    // thank you daniel for polling code
     fn poll(&mut self, waiter: &Condvar) -> bool {
-        let res = self
-            .iface
-            .poll(Instant::now(), &mut self.device, &mut self.socketset);
+        let res = self.iface.poll(Instant::now(), &mut self.device, &mut self.socketset);
         // When we poll, notify the CV so that other waiting threads can retry their blocking
         // operations.
         // println!("poll(): notify cv");
-        // waiter.notify_all();
+        waiter.notify_all();
         res
+    }
+    fn poll_time(&mut self) -> Option<Duration> {
+        self.iface.poll_delay(Instant::now(), &mut self.socketset)
     }
 }
 
@@ -206,37 +251,35 @@ impl SmolTcpListener {
         // we can have multiple sockets listening on the same port
         println!("shim: in accept()");
         // this is the listener
+        let mut remote_addr = None;
         let engine = &ENGINE;
-        let stream;
-        let mut socket: &mut Socket<'static>;
-        loop {
-            {
-                let mut core = (*engine).core.lock().unwrap();
-                core.poll(&engine.condvar);
-                socket = core.get_mutable_socket(self.get_handle());
-                if socket.is_active() {
-                    let remote = socket.remote_endpoint().unwrap();
-                    drop(core);
-                    println!("shim: accepted connection; in accept()");
-                    stream = SmolTcpStream {
-                        socket_handle: self.get_handle(),
-                        local_addr: self.local_addr,
-                        port: self.port,
-                        rx_shutdown: Arc::new(Mutex::new(false)),
-                    };
-                    // the socket addr returned is that of the remote endpoint. ie. the client.
-                    let remote_addr = SocketAddr::from((remote.addr, remote.port));
-                    { // creating another listener and changing the value of the socket handle in self
-                        let next_list = (Self::bind(self.local_addr).unwrap());
-                        Self::change_handle(&self, next_list.get_handle());
-                    }
-
-                    return Ok((stream, remote_addr));
-                }
-            } // mutex drops here
+        engine.blocking(|core| {
+            let sock = core.get_mutable_socket(self.get_handle());
+            if sock.is_active() {
+                // the socket addr returned is that of the remote endpoint. ie. the client.
+                let remote = sock.remote_endpoint().unwrap();
+                remote_addr = Some(SocketAddr::from((remote.addr, remote.port)));
+                // drop(*core);
+                Some(())
+            } else {
+                None
+            }
+        }); // mutex drops here?
+        // now, socket is active and mutex is not locked
+        let stream = SmolTcpStream {
+            socket_handle: self.get_handle(),
+            local_addr: self.local_addr,
+            port: self.port,
+            rx_shutdown: Arc::new(Mutex::new(false)),
+        };
+        if let None = remote_addr {
+            return Err(Error::other("accept error"));
         }
-        // how are we handling error cases? should there be some sort of a timeout?
-        return Err(Error::other("accepting error"));
+        { // creating another listener and changing the value of the socket handle in self
+            let next_list = (Self::bind(self.local_addr).unwrap());
+            Self::change_handle(&self, next_list.get_handle());
+        }
+        Ok((stream, remote_addr.unwrap()))
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr, Error> {
@@ -254,6 +297,12 @@ pub struct SmolTcpStream {
     rx_shutdown: Arc<Mutex<bool>>,
 }
 impl Read for SmolTcpStream {
+    /* read():
+     * parameters - reference to where the data should be placed upon reading
+     * return - number of bytes read upon success; error upon error
+     * loads the data read into the buffer given
+     * if shutdown(Shutdown::Read) has been called, all reads will return Ok(0)
+     */
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
         // "All currently blocked and future reads will return Ok(0)."
         // -- std::net shutdown documentation
@@ -261,15 +310,20 @@ impl Read for SmolTcpStream {
         if self.get_rx_shutdown() == true {
             return Ok(0);
         }
+        let mut dequeued = None;
         let engine = &ENGINE;
-        let mut core = engine.core.lock().unwrap();
-        let socket = core.get_mutable_socket(self.socket_handle);
-        let result = socket.recv_slice(buf);
-        // println!(" - {}", String::from_utf8((buf).to_vec()).unwrap());
-        drop(core);
-        if let Ok(res) = result {
+        engine.blocking(|core| {
+            let socket = core.get_mutable_socket(self.socket_handle);
+            if socket.can_recv() {
+                dequeued = Some(socket.recv_slice(buf).unwrap());
+                Some(())
+            } else {
+                None
+            }
+        });
+        if let Some(deq) = dequeued {
             // println!("shim: read: success: {res}");
-            Ok(res)
+            Ok(deq)
         } else {
             // error
             Err(Error::other("read error"))
@@ -277,28 +331,38 @@ impl Read for SmolTcpStream {
     }
 }
 impl Write for SmolTcpStream {
-    // write
+    /* write():
+     * parameters - reference to data to be written (represented as an array of u8)
+     * result - number of bytes written upon success; error upon error.
+     * writes given data to the connected socket.
+     */
     fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
         let engine = &ENGINE;
-        let mut core = engine.core.lock().unwrap();
-        let socket = core.get_mutable_socket(self.socket_handle);
-        let result = socket.send_slice(buf);
-        drop(core);
-        if let Ok(res) = result {
+        let mut enqueued = None;
+        engine.blocking(|core| {
+            let socket = core.get_mutable_socket(self.socket_handle);
+            if socket.can_send() {
+                enqueued = Some(socket.send_slice(buf).unwrap());
+                Some(())
+            } else {
+                None
+            }
+        });
+        if let Some(enq) = enqueued {
             // success
-            // println!("shim: wrote: {res} bytes:");
-            // println!("{}", String::from_utf8((buf).to_vec()).unwrap());
-            Ok(res)
+            Ok(enq)
         } else {
             // error
             Err(Error::other("write error"))
         }
     }
+    /* flush():
+     */
     fn flush(&mut self) -> Result<(), Error> {
         Ok(())
-        // idk this is what std::net::TcpStream::flush() does: 
+        // lol this is what std::net::TcpStream::flush() does: 
         // https://doc.rust-lang.org/src/std/net/tcp.rs.html#695
-        // also smoltcp doesn't have a flush method for its
+        // also smoltcp doesn't have a flush method for its socket buffer
     }
 }
 pub trait From<SmolTcpStream> {
@@ -359,7 +423,7 @@ impl SmolTcpStream {
             let tx_buffer = SocketBuffer::new(vec![0; 4096]);
             Socket::new(rx_buffer, tx_buffer)
         };
-        // TODO: don't hardcode in port. make ephemeral port.
+        // TODO: don't hardcode in port. create stack to assign ports
         let PORT = 49152;
         let config = Config::new(EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).into()); // change later?
         let mut device = Loopback::new(Medium::Ethernet);
@@ -398,7 +462,7 @@ impl SmolTcpStream {
         drop(core);
         let remote_addr = SocketAddr::from((remote.addr, remote.port));
         Ok(remote_addr)
-        // TODO: add error handling
+        // TODO: add error handling. none so far because this shouldn't fail
     }
 
     /* shutdown_write():
@@ -465,8 +529,6 @@ impl SmolTcpStream {
     }
 
     pub fn try_clone(&self) -> Result<SmolTcpStream, Error> {
-        // more doc reading necessary?
-        // todo!();
         let handle = self.socket_handle.clone();
         Ok(SmolTcpStream { 
             socket_handle: handle, 
@@ -478,20 +540,3 @@ impl SmolTcpStream {
 }
 // implement impl std::fmt::Debug for SmolTcpStream
 // add `#[derive(Debug)]` to `SmolTcpStream` or manually `impl std::fmt::Debug for SmolTcpStream`
-
-/*
-tests:
-make_listener:
-
-*/
-#[cfg(test)]
-mod tests {
-    use std::net::SocketAddr;
-
-    use crate::shim::SmolTcpListener;
-    #[test]
-    fn make_listener() {
-        let listener = SmolTcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 443))).unwrap();
-        let stream = listener.accept();
-    }
-}
