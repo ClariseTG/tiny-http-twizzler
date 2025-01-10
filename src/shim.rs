@@ -13,7 +13,6 @@ use smoltcp::{
     time::{Instant, Duration},
     wire::{EthernetAddress, IpAddress, IpCidr},
 };
-// use tracing::Level;
 
 pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
 pub struct Engine {
@@ -46,6 +45,7 @@ impl Engine {
         // 1. when smoltcp says to based on poll_time() (calls poll_delay internally)
         // 2. when the state changes (eg a new socket is added)
         // 3. when blocking threads need to poll (we get a message on the channel)
+        // credit: daniel
         let thread = std::thread::spawn(move || {
             let inner = _inner;
             let waiter = _waiter;
@@ -56,7 +56,6 @@ impl Engine {
 
                     // We may need to poll immediately!
                     if matches!(time, Some(Duration::ZERO)) {
-                        // tracing::trace!("poll thread polling");
                         inner.poll(&*waiter);
                         continue;
                     }
@@ -88,7 +87,6 @@ impl Engine {
     // be called spuriously.
     fn blocking<R>(&self, mut f: impl FnMut(&mut Core) -> Option<R>) -> R {
         let mut core = self.core.lock().unwrap();
-        // tracing::trace!("polling from blocking");
         // Immediately poll, since we wait to have as up-to-date state as possible.
         core.poll(&self.waiter);
         loop {
@@ -102,7 +100,6 @@ impl Engine {
                     return r;
                 }
                 None => {
-                    // tracing::trace!("blocking thread");
                     core = self.waiter.wait(core).unwrap();
                 }
             }
@@ -366,17 +363,16 @@ impl Write for SmolTcpStream {
     }
 }
 pub trait From<SmolTcpStream> {
-    fn new() {}
-    fn from(s: SmolTcpStream) -> Self
+    fn from<>(s: SmolTcpStream) -> Self
     where
         Self: Sized,
     {
-        todo!();
+        todo!()
     }
 }
 impl From<SmolTcpStream> for SmolTcpStream {
     fn from(s: SmolTcpStream) -> SmolTcpStream {
-        todo!();
+        s
     }
 }
 
@@ -410,10 +406,9 @@ impl SmolTcpStream {
         Err(ConnectError::InvalidState) // is that the correct thing to return?
     }
     /* connect():
-     * parameters: address(es) a list of addresses may be given
+     * parameters: address(es) a list of addresses may be given. must take a REMOTE HOST'S address
      * return: a smoltcpstream that is connected to the remote server.
      */
-    /// addr is an address of the remote host.
     pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<SmolTcpStream, Error> {
         println!("shim: in connect()");
         let engine = &ENGINE; // accessing global engine
@@ -423,7 +418,7 @@ impl SmolTcpStream {
             let tx_buffer = SocketBuffer::new(vec![0; 4096]);
             Socket::new(rx_buffer, tx_buffer)
         };
-        // TODO: don't hardcode in port. create stack to assign ports
+        // TODO: create stack to assign ports
         let PORT = 49152;
         let config = Config::new(EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).into()); // change later?
         let mut device = Loopback::new(Medium::Ethernet);
@@ -512,8 +507,7 @@ impl SmolTcpStream {
                 // "All currently blocked and future reads will return Ok(0)."
                 // -- std::net shutdown documentation
                 // READ the implementation of may_recv at https://docs.rs/smoltcp/latest/src/smoltcp/socket/tcp.rs.html#1104
-                // (*socket).rx_buffer.clear(); <<<--------------------- cannot access private
-                // rx_buffer. how to clear rx_buffer?
+                // (*socket).rx_buffer.clear(); <<<--------------------- cannot access private rx_buffer
                 Self::shutdown_read(&self);
                 return Ok(());
             }
