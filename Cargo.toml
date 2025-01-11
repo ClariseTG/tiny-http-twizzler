@@ -32,7 +32,7 @@ native-tls = { version = "0.2", optional = true }
 twizzler-net = { git = "https://github.com/twizzler-operating-system/twizzler.git" }
 twizzler-object = { git = "https://github.com/twizzler-operating-system/twizzler.git" }
 twizzler-async = { git = "https://github.com/twizzler-operating-system/twizzler.git" }
-twizzler-abi = { git = "https://github.com/twizzler-operating-system/twizzler.git", features = ["runtime"] }
+twizzler-abi = { git = "https://github.com/twizzler-operating-system/twizzler.git" }
 byteorder = "1.4.3"
 
 [dev-dependencies]
