@@ -29,11 +29,9 @@ rustls = { version = "0.20", optional = true }
 rustls-pemfile = { version = "0.2.1", optional = true }
 zeroize = { version = "1", optional = true }
 native-tls = { version = "0.2", optional = true }
-twizzler-net = { git = "https://github.com/twizzler-operating-system/twizzler.git" }
-twizzler-object = { git = "https://github.com/twizzler-operating-system/twizzler.git" }
-twizzler-async = { git = "https://github.com/twizzler-operating-system/twizzler.git" }
-twizzler-abi = { git = "https://github.com/twizzler-operating-system/twizzler.git" }
 byteorder = "1.4.3"
+smoltcp = "0.11.0"
+lazy_static = "1.5.0"
 
 [dev-dependencies]
 rustc-serialize = "0.3"
