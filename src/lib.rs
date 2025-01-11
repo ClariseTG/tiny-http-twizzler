@@ -124,7 +124,6 @@ pub use test::TestRequest;
 mod client;
 mod common;
 mod connection;
-pub mod engine;
 mod log;
 mod request;
 mod response;
