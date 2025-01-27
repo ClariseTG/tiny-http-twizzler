@@ -131,7 +131,7 @@ pub mod shim;
 mod ssl;
 mod test;
 mod util;
-
+mod port;
 // #[cfg(target_os = "twizzler")]
 use shim::SmolTcpListener as TcpListener;
 // #[cfg(target_os = "twizzler")]
