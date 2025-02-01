@@ -275,7 +275,7 @@ impl SmolTcpListener {
     // to think about: each socket must be pulled from the engine and checked for activeness.
     pub fn accept(&self) -> Result<(SmolTcpStream, SocketAddr), Error> {
         // this is the listener
-        println!("in accept");
+        // println!("in accept");
         let mut remote_addr = None;
         let engine = &ENGINE;
         let mut i: usize = 0;
@@ -347,7 +347,11 @@ impl Read for SmolTcpStream {
             let socket = core.get_mutable_socket(self.socket_handle);
             if socket.can_recv() {
                 dequeued = Some(socket.recv_slice(buf).unwrap());
-                Some(())
+                Some(dequeued)
+            } else if socket.state() == State::CloseWait {
+                dequeued = Some(0);
+                    self.set_rx_shutdown(true);
+                    Some(dequeued)
             } else {
                 None
             }
@@ -494,13 +498,13 @@ impl SmolTcpStream {
     /* shutdown_write():
      * helper function for shutdown()
      */
-    fn shutdown_write(socket: &mut Socket<'static>) {
+    fn shutdown_write(&self, socket: &mut Socket<'static>) {
         socket.close(); // close() only closes the transmit half of the connection
     }
     /* shutdown_both():
      * helper function for shutdown()
      */
-    fn shutdown_both(socket: &mut Socket<'static>) {
+    fn shutdown_both(&self, socket: &mut Socket<'static>) {
         socket.abort();
         // abort() immediately aborts the connection and closes the socket, sends a reset packet to
         // the remote endpoint
@@ -509,8 +513,11 @@ impl SmolTcpStream {
      * helper function for shutdown()
      */
     fn shutdown_read(&self) {
+        self.set_rx_shutdown(true);
+    }
+    fn set_rx_shutdown(&self, set: bool) {
         let mut read_shutdown = self.rx_shutdown.lock().unwrap();
-        *read_shutdown = true;
+        *read_shutdown = set;
     }
     fn get_rx_shutdown(&self) -> bool {
         *self.rx_shutdown.lock().unwrap()
@@ -525,14 +532,14 @@ impl SmolTcpStream {
     depending on the operating system. On Linux, the second call will
     return `Ok(())`, but on macOS, it will return `ErrorKind::NotConnected`.
     This may change in the future." -- std::net documentation
-    // Twizzler will return Ok(())
+    // Twizzler returns Ok(())
     */
     pub fn shutdown(&self, how: Shutdown) -> Result<(), Error> {
         // specifies shutdown of read, write, or both with enum Shutdown
         let engine = &ENGINE;
         let mut core = (*engine).core.lock().unwrap(); // acquire mutex
         let mut socket = core.get_mutable_socket(self.socket_handle);
-        if socket.state() == State::Closed { // checks to see whether the socket is already closed. if it is, then return Ok(()) early
+        if socket.state() == State::Closed { // if already closed, exit early
             drop(core);
             return Ok(());
         }
@@ -544,15 +551,15 @@ impl SmolTcpStream {
                 // -- std::net shutdown documentation
                 // READ the implementation of may_recv at https://docs.rs/smoltcp/latest/src/smoltcp/socket/tcp.rs.html#1104
                 // (*socket).rx_buffer.clear(); <<<--------------------- cannot access private rx_buffer
-                Self::shutdown_read(&self);
+                self.shutdown_read();
                 return Ok(());
             }
             Shutdown::Write => {
-                Self::shutdown_write(&mut socket);
+                self.shutdown_write(&mut socket);
                 return Ok(());
             } // mutex drops here
             Shutdown::Both => {
-                Self::shutdown_both(&mut socket);
+                self.shutdown_both(&mut socket);
                 return Ok(());
             } // mutex drops here
         } // mutex drops here if shutdown(read)
