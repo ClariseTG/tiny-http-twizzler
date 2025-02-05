@@ -2,7 +2,10 @@ use std::{
     io::{Error, ErrorKind, Read, Write},
     net::{Shutdown, SocketAddr, ToSocketAddrs},
     str::FromStr,
-    sync::{mpsc, Arc, Condvar, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Condvar, Mutex,
+    },
     thread::JoinHandle,
 };
 
@@ -22,7 +25,7 @@ pub type SocketBuffer<'a> = RingBuffer<'a, u8>;
 pub struct Engine {
     core: Arc<Mutex<Core>>,
     waiter: Arc<Condvar>,
-    channel: mpsc::Sender<()>,
+    channel: mpsc::Sender<Option<(SocketHandle, u16)>>,
     _polling_thread: JoinHandle<()>,
 }
 
@@ -36,6 +39,9 @@ const IP: &str = "10.0.2.15"; // QEMU user networking default IP
 const GATEWAY: &str = "10.0.2.2"; // QEMU user networking gateway
 const PORT: u16 = 5555;
 
+const RX_BUF_SIZE: usize = 65536;
+const TX_BUF_SIZE: usize = 8192;
+
 lazy_static! {
     static ref ENGINE: Arc<Engine> = Arc::new(Engine::new());
     static ref PORTS: Arc<PortAssigner> = Arc::new(PortAssigner::new());
@@ -43,7 +49,7 @@ lazy_static! {
 
 impl Engine {
     fn new() -> Self {
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = std::sync::mpsc::channel::<Option<(SocketHandle, u16)>>();
         let (iface, device) = get_device_and_interface(sender.clone());
         let core = Arc::new(Mutex::new(Core::new(iface, device)));
         let waiter = Arc::new(Condvar::new());
@@ -58,7 +64,32 @@ impl Engine {
         let thread = std::thread::spawn(move || {
             let inner = _inner;
             let waiter = _waiter;
+            let mut tracking = Vec::new();
+
+            fn check_tracking(tracking: &mut Vec<(SocketHandle, u16)>) {
+                let mut core = ENGINE.core.lock().unwrap();
+                let removed = tracking
+                    .extract_if(|item| {
+                        let socket = core.get_mutable_socket(item.0);
+                        if socket.state() == State::Closed {
+                            log::debug!("tracked tcp socket {} in closed state", item.0);
+                            core.release_socket(item.0);
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                drop(core);
+                for item in removed {
+                    if item.1 != 0 {
+                        PORTS.return_port(item.1);
+                    }
+                }
+            }
+
             loop {
+                check_tracking(&mut tracking);
                 let time = {
                     let mut inner = inner.lock().unwrap();
                     inner.poll(&*waiter);
@@ -73,13 +104,14 @@ impl Engine {
                 };
 
                 // Wait until the designated timeout, or until we get a message on the channel.
-                match time {
-                    Some(dur) => {
-                        let _ = receiver.recv_timeout(dur.into());
-                    }
-                    None => {
-                        receiver.recv().unwrap();
-                    }
+                let inner = match time {
+                    Some(dur) => receiver.recv_timeout(dur.into()).ok(),
+                    None => receiver.recv().ok(),
+                }
+                .flatten();
+                if let Some(inner) = inner {
+                    log::debug!("tracking socket {}, port {}", inner.0, inner.1);
+                    tracking.push(inner);
                 }
             }
         });
@@ -89,6 +121,10 @@ impl Engine {
             channel: sender,
             _polling_thread: thread,
         }
+    }
+
+    fn wake(&self) {
+        let _ = self.channel.send(None);
     }
 
     fn add_socket(&self, socket: Socket<'static>) -> SocketHandle {
@@ -106,23 +142,30 @@ impl Engine {
         // Immediately poll, since we wait to have as up-to-date state as possible.
         core.poll(&self.waiter);
         // We'll need the polling thread to wake up and do work.
-        self.channel.send(()).unwrap();
+        self.wake();
         loop {
-            //log::debug!("blocking loop callback");
             match f(&mut *core) {
                 Ok(r) => {
                     // We have done work, so again, notify the polling thread.
-                    self.channel.send(()).unwrap();
+                    self.wake();
                     drop(core);
                     return Ok(r);
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                    //log::debug!("blocking: wait");
                     core = self.waiter.wait(core).unwrap();
                 }
                 Err(e) => return Err(e),
             }
         }
+    }
+
+    fn track(&self, inner: &TcpStreamInner) {
+        let port = if inner.is_ephemeral_port {
+            inner.port
+        } else {
+            0
+        };
+        let _ = self.channel.send(Some((inner.socket_handle, port)));
     }
 }
 
@@ -158,14 +201,12 @@ impl Core {
             .poll(Instant::now(), &mut self.device, &mut self.socketset);
         // When we poll, notify the CV so that other waiting threads can retry their blocking
         // operations.
-        //log::debug!("notify_all");
         waiter.notify_all();
         res
     }
 
     fn poll_time(&mut self) -> Option<Duration> {
         self.iface.poll_delay(Instant::now(), &mut self.socketset)
-        //.unwrap_or(Duration::from_millis(500)),
     }
 }
 
@@ -181,9 +222,6 @@ struct Listener {
     local_addr: SocketAddr,
     port: u16,
 }
-// TODO: take out
-// create an array of listeners and store their handles in the struct
-// when swapping the listener, swap out each listener that has advanced state.
 
 impl SmolTcpListener {
     /* each_addr():
@@ -213,8 +251,8 @@ impl SmolTcpListener {
 
     fn do_bind<A: ToSocketAddrs>(addrs: A) -> Result<(Socket<'static>, u16, SocketAddr), Error> {
         let mut sock = {
-            let rx_buffer = SocketBuffer::new(vec![0; 4096]);
-            let tx_buffer = SocketBuffer::new(vec![0; 4096]);
+            let rx_buffer = SocketBuffer::new(vec![0; RX_BUF_SIZE]);
+            let tx_buffer = SocketBuffer::new(vec![0; TX_BUF_SIZE]);
             Socket::new(rx_buffer, tx_buffer) // this is the listening socket
         };
         let (port, local_address) = {
@@ -287,10 +325,6 @@ impl SmolTcpListener {
         f(handle)
     }
 
-    fn change_handle(&self, listener_no: usize, new_handle: SocketHandle) {
-        self.with_handle(listener_no, |handle| *handle = new_handle);
-    }
-
     // accept
     // create a new socket for tcpstream
     // ^^ creating a new one so that the user can call accept() on the previous one again
@@ -324,12 +358,19 @@ impl SmolTcpListener {
                         };
                         let newhandle = core.add_socket(sock);
                         let stream = SmolTcpStream {
-                            socket_handle: *handle,
-                            port: self.port,
-                            rx_shutdown: Arc::new(Mutex::new(false)),
+                            inner: Arc::new(TcpStreamInner {
+                                socket_handle: *handle,
+                                port: self.port,
+                                is_ephemeral_port: false,
+                                rx_shutdown: AtomicBool::new(false),
+                            }),
                         };
                         *handle = newhandle;
-                        log::debug!("accept: return for {}", remote_addr);
+                        log::debug!(
+                            "accept: return for {}, socket {}",
+                            remote_addr,
+                            stream.inner.socket_handle
+                        );
                         Ok((stream, remote_addr))
                     } else {
                         Err(ErrorKind::WouldBlock.into())
@@ -350,45 +391,6 @@ impl SmolTcpListener {
                 }
             }
         })
-        /*
-        loop {
-            if i > 7 {
-                i = 0;
-            }
-            let mut core = (*engine).core.lock().unwrap();
-            core.poll(&engine.waiter);
-            engine.channel.send(()).unwrap();
-            let handle = self.get_handle(i);
-            let sock = core.get_mutable_socket(handle);
-            if sock.is_active() {
-                let remote = sock.remote_endpoint().unwrap(); // the socket addr returned is that of the remote endpoint. ie. the client.
-                remote_addr = Some(SocketAddr::from((remote.addr, remote.port)));
-                engine.channel.send(()).unwrap(); // ??
-                drop(core);
-                {
-                    // creating another listener and swapping self's socket handle
-                    let next_list = Self::bind_once(self.local_addr).unwrap(); // create exactly one listener
-                    Self::change_handle(&self, i, next_list.socket_handle);
-                }
-                i += 1;
-                let stream = SmolTcpStream {
-                    socket_handle: handle,
-                    port: self.port,
-                    rx_shutdown: Arc::new(Mutex::new(false)),
-                };
-                if let None = remote_addr {
-                    return Err(Error::other("accept error"));
-                }
-                return Ok((stream, remote_addr.unwrap()));
-            } else {
-                if i <= 7 {
-                    i += 1;
-                    continue;
-                }
-                core = engine.waiter.wait(core).unwrap();
-            }
-            return Err(Error::other("accept error"));
-            */
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr, Error> {
@@ -397,13 +399,27 @@ impl SmolTcpListener {
         return Ok(self.local_addr);
     }
 }
-//@ananya: you are ugly you two-faced devil. -sanjana
-#[derive(Debug)]
-pub struct SmolTcpStream {
+
+struct TcpStreamInner {
     socket_handle: SocketHandle,
     port: u16,
-    rx_shutdown: Arc<Mutex<bool>>,
+    is_ephemeral_port: bool,
+    rx_shutdown: AtomicBool,
 }
+
+pub struct SmolTcpStream {
+    inner: Arc<TcpStreamInner>,
+}
+
+impl core::fmt::Debug for SmolTcpStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmolTcpStream")
+            .field("socket_handle", &self.inner.socket_handle)
+            .field("port", &self.inner.port)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Read for SmolTcpStream {
     /* read():
      * parameters - reference to where the data should be placed upon reading
@@ -412,19 +428,13 @@ impl Read for SmolTcpStream {
      * if shutdown(Shutdown::Read) has been called, all reads will return Ok(0)
      */
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
-        // "All currently blocked and future reads will return Ok(0)."
-        // -- std::net shutdown documentation
-        // ^^ check whether the shutdown for read has been called, then return Ok(0)
-        if self.get_rx_shutdown() == true {
-            return Ok(0);
-        }
         let engine = &ENGINE;
         engine.blocking(|core| {
-            let socket = core.get_mutable_socket(self.socket_handle);
+            let socket = core.get_mutable_socket(self.inner.socket_handle);
             if socket.can_recv() {
                 Ok(socket.recv_slice(buf).unwrap())
-            } else if socket.state() == State::CloseWait {
-                self.set_rx_shutdown(true);
+            } else if !socket.may_recv() || self.inner.rx_shutdown.load(Ordering::SeqCst) {
+                self.inner.rx_shutdown.store(true, Ordering::SeqCst);
                 Ok(0)
             } else {
                 Err(ErrorKind::WouldBlock.into())
@@ -432,6 +442,7 @@ impl Read for SmolTcpStream {
         })
     }
 }
+
 impl Write for SmolTcpStream {
     /* write():
      * parameters - reference to data to be written (represented as an array of u8)
@@ -441,9 +452,11 @@ impl Write for SmolTcpStream {
     fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
         let engine = &ENGINE;
         engine.blocking(|core| {
-            let socket = core.get_mutable_socket(self.socket_handle);
+            let socket = core.get_mutable_socket(self.inner.socket_handle);
             if socket.can_send() {
                 Ok(socket.send_slice(buf).unwrap())
+            } else if !socket.may_send() {
+                Err(ErrorKind::ConnectionReset.into())
             } else {
                 Err(ErrorKind::WouldBlock.into())
             }
@@ -456,19 +469,6 @@ impl Write for SmolTcpStream {
         // lol this is what std::net::TcpStream::flush() does:
         // https://doc.rust-lang.org/src/std/net/tcp.rs.html#695
         // also smoltcp doesn't have a flush method for its socket buffer
-    }
-}
-pub trait From<SmolTcpStream> {
-    fn from(_s: SmolTcpStream) -> Self
-    where
-        Self: Sized,
-    {
-        todo!()
-    }
-}
-impl From<SmolTcpStream> for SmolTcpStream {
-    fn from(s: SmolTcpStream) -> SmolTcpStream {
-        s
     }
 }
 
@@ -509,33 +509,28 @@ impl SmolTcpStream {
         let engine = &ENGINE;
         let mut sock = {
             // create new socket
-            let rx_buffer = SocketBuffer::new(vec![0; 4096]);
-            let tx_buffer = SocketBuffer::new(vec![0; 4096]);
+            let rx_buffer = SocketBuffer::new(vec![0; RX_BUF_SIZE]);
+            let tx_buffer = SocketBuffer::new(vec![0; TX_BUF_SIZE]);
             Socket::new(rx_buffer, tx_buffer)
         };
         let ports = &PORTS;
-        let Some(port) = (*ports).get_ephemeral_port() else {
+        let Some(port) = ports.get_ephemeral_port() else {
             return Err(Error::other("dynamic port overflow!"));
-        }; // this is the client's port
-        let config = Config::new(EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]).into()); // change later?
-        let mut device = Loopback::new(Medium::Ethernet);
-        let mut iface = Interface::new(config, &mut device, Instant::now());
-        iface.update_ip_addrs(|ip_addrs| {
-            ip_addrs
-                .push(IpCidr::new(IpAddress::v4(127, 0, 0, 1), 8))
-                .unwrap();
-        });
-        if let Err(e) = Self::each_addr(addr, &mut sock, iface.context(), port) {
-            println!("connect(): connection error!! {}", e);
-            return Err(Error::other("connection error"));
-        } else {
-            // success
+        };
+        let mut core = engine.core.lock().unwrap();
+        if let Err(e) = Self::each_addr(addr, &mut sock, core.iface.context(), port) {
+            ports.return_port(port);
+            return Err(Error::other(format!("connection error: {e}")));
         }; // note to self: make sure remote endpoint matches the server address!
-        let handle = (*engine).add_socket(sock);
+        let handle = engine.add_socket(sock);
+        log::debug!("connect: port {}, socket {}", port, handle);
         let smoltcpstream = SmolTcpStream {
-            socket_handle: handle,
-            port,
-            rx_shutdown: Arc::new(Mutex::new(false)),
+            inner: Arc::new(TcpStreamInner {
+                socket_handle: handle,
+                port,
+                rx_shutdown: AtomicBool::new(false),
+                is_ephemeral_port: true,
+            }),
         };
         Ok(smoltcpstream)
     }
@@ -547,42 +542,13 @@ impl SmolTcpStream {
      */
     pub fn peer_addr(&self) -> Result<SocketAddr, Error> {
         let engine = &ENGINE;
-        let mut core = (*engine).core.lock().unwrap();
-        let socket = core.get_socket(self.socket_handle);
-        let remote = socket.remote_endpoint().unwrap();
-        drop(core);
+        let mut core = engine.core.lock().unwrap();
+        let socket = core.get_socket(self.inner.socket_handle);
+        let remote = socket.remote_endpoint().ok_or(ErrorKind::NotConnected)?;
         let remote_addr = SocketAddr::from((remote.addr, remote.port));
         Ok(remote_addr)
-        // TODO: add error handling? none so far because this shouldn't fail
     }
 
-    /* shutdown_write():
-     * helper function for shutdown()
-     */
-    fn shutdown_write(&self, socket: &mut Socket<'static>) {
-        socket.close(); // close() only closes the transmit half of the connection
-    }
-    /* shutdown_both():
-     * helper function for shutdown()
-     */
-    fn shutdown_both(&self, socket: &mut Socket<'static>) {
-        socket.abort();
-        // abort() immediately aborts the connection and closes the socket, sends a reset packet to
-        // the remote endpoint
-    }
-    /* shutdown_read():
-     * helper function for shutdown()
-     */
-    fn shutdown_read(&self) {
-        self.set_rx_shutdown(true);
-    }
-    fn set_rx_shutdown(&self, set: bool) {
-        let mut read_shutdown = self.rx_shutdown.lock().unwrap();
-        *read_shutdown = set;
-    }
-    fn get_rx_shutdown(&self) -> bool {
-        *self.rx_shutdown.lock().unwrap()
-    }
     /* shutdown():
      * parameters: how - an enum of Shutdown that specifies what part of the socket to shutdown.
      *             options are Read, Write, or Both.
@@ -598,43 +564,45 @@ impl SmolTcpStream {
     pub fn shutdown(&self, how: Shutdown) -> Result<(), Error> {
         // specifies shutdown of read, write, or both with enum Shutdown
         let engine = &ENGINE;
-        let mut core = (*engine).core.lock().unwrap(); // acquire mutex
-        let mut socket = core.get_mutable_socket(self.socket_handle);
+        let mut core = engine.core.lock().unwrap(); // acquire mutex
+        let mut socket = core.get_mutable_socket(self.inner.socket_handle);
+        log::debug!(
+            "socket {} shutdown: {:?}, state = {:?}",
+            self.inner.socket_handle,
+            how,
+            socket.state()
+        );
         if socket.state() == State::Closed {
             // if already closed, exit early
-            drop(core);
             return Ok(());
         }
-        let ports = &PORTS;
-        (*ports).return_port(self.port);
         match how {
             Shutdown::Read => {
-                // "All currently blocked and future reads will return Ok(0)."
-                // -- std::net shutdown documentation
-                // READ the implementation of may_recv at https://docs.rs/smoltcp/latest/src/smoltcp/socket/tcp.rs.html#1104
-                // (*socket).rx_buffer.clear(); <<<--------------------- cannot access private
-                // rx_buffer
-                self.shutdown_read();
+                self.inner.rx_shutdown.store(true, Ordering::SeqCst);
                 return Ok(());
             }
             Shutdown::Write => {
-                self.shutdown_write(&mut socket);
+                socket.close();
                 return Ok(());
-            } // mutex drops here
+            }
             Shutdown::Both => {
-                self.shutdown_both(&mut socket);
+                socket.close();
+                self.inner.rx_shutdown.store(true, Ordering::SeqCst);
                 return Ok(());
-            } // mutex drops here
-        } // mutex drops here if shutdown(read)
+            }
+        }
     }
 
     pub fn try_clone(&self) -> Result<SmolTcpStream, Error> {
-        let handle = self.socket_handle.clone();
-        Ok(SmolTcpStream {
-            socket_handle: handle,
-            port: self.port,
-            rx_shutdown: Arc::new(Mutex::new(self.get_rx_shutdown())),
+        Ok(Self {
+            inner: self.inner.clone(),
         })
+    }
+}
+
+impl Drop for TcpStreamInner {
+    fn drop(&mut self) {
+        ENGINE.track(self);
     }
 }
 
@@ -642,7 +610,7 @@ impl SmolTcpStream {
 // add `#[derive(Debug)]` to `SmolTcpStream` or manually `impl std::fmt::Debug for SmolTcpStream`
 
 fn get_device_and_interface(
-    notifier: std::sync::mpsc::Sender<()>,
+    notifier: std::sync::mpsc::Sender<Option<(SocketHandle, u16)>>,
 ) -> (Interface, DeviceWrapper<TwizzlerTransport>) {
     use virtio_net::get_device;
     let mut device = get_device(notifier);

@@ -27,7 +27,10 @@
 //!     // blocks until the next request is received
 //!     let request = match server.recv() {
 //!         Ok(rq) => rq,
-//!         Err(e) => { println!("error: {}", e); break }
+//!         Err(e) => {
+//!             println!("error: {}", e);
+//!             break;
+//!         }
 //!     };
 //!
 //!     // do something with the request
@@ -45,7 +48,7 @@
 //! let server = Arc::new(server);
 //! let mut guards = Vec::with_capacity(4);
 //!
-//! for _ in (0 .. 4) {
+//! for _ in (0..4) {
 //!     let server = server.clone();
 //!
 //!     let guard = thread::spawn(move || {
@@ -64,9 +67,9 @@
 //!
 //! ## Handling requests
 //!
-//! The `Request` object returned by `server.recv()` contains informations about the client's request.
-//! The most useful methods are probably `request.method()` and `request.url()` which return
-//! the requested method (`GET`, `POST`, etc.) and url.
+//! The `Request` object returned by `server.recv()` contains informations about the client's
+//! request. The most useful methods are probably `request.method()` and `request.url()` which
+//! return the requested method (`GET`, `POST`, etc.) and url.
 //!
 //! To handle a request, you need to create a `Response` object. See the docs of this object for
 //! more infos. Here is an example of creating a `Response` from a file:
@@ -88,9 +91,31 @@
 //! let _ = request.respond(response);
 //! ```
 // #![forbid(unsafe_code)]
+#![feature(extract_if)]
 #![deny(rust_2018_idioms)]
 #![allow(clippy::match_like_matches_macro)]
 
+// use std::net::{Shutdown, TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, ToSocketAddrs};
+use std::{
+    error::Error,
+    io::{Error as IoError, ErrorKind as IoErrorKind, Result as IoResult},
+    sync::{
+        atomic::{AtomicBool, Ordering::Relaxed},
+        mpsc, Arc,
+    },
+    thread,
+    time::Duration,
+};
+
+use client::ClientConnection;
+pub use common::{HTTPVersion, Header, HeaderField, Method, StatusCode};
+use connection::Connection;
+pub use connection::{ConfigListenAddr, ListenAddr, Listener};
+pub use request::{ReadWrite, Request};
+pub use response::{Response, ResponseBox};
+pub use test::TestRequest;
+use util::MessagesQueue;
 #[cfg(any(
     feature = "ssl-openssl",
     feature = "ssl-rustls",
@@ -98,40 +123,17 @@
 ))]
 use zeroize::Zeroizing;
 
-use std::error::Error;
-use std::io::Error as IoError;
-use std::io::ErrorKind as IoErrorKind;
-use std::io::Result as IoResult;
-// use std::net::{Shutdown, TcpStream, ToSocketAddrs};
-use std::net::{Shutdown, ToSocketAddrs};
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering::Relaxed;
-use std::sync::mpsc;
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
-
-use client::ClientConnection;
-use connection::Connection;
-use util::MessagesQueue;
-
-pub use common::{HTTPVersion, Header, HeaderField, Method, StatusCode};
-pub use connection::{ConfigListenAddr, ListenAddr, Listener};
-pub use request::{ReadWrite, Request};
-pub use response::{Response, ResponseBox};
-pub use test::TestRequest;
-
 mod client;
 mod common;
 mod connection;
 mod log;
+mod port;
 mod request;
 mod response;
 pub mod shim;
 mod ssl;
 mod test;
 mod util;
-mod port;
 // #[cfg(target_os = "twizzler")]
 use shim::SmolTcpListener as TcpListener;
 // #[cfg(target_os = "twizzler")]
