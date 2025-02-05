@@ -96,10 +96,10 @@
 #![allow(clippy::match_like_matches_macro)]
 
 // use std::net::{Shutdown, TcpStream, ToSocketAddrs};
-use std::net::{Shutdown, ToSocketAddrs};
 use std::{
     error::Error,
     io::{Error as IoError, ErrorKind as IoErrorKind, Result as IoResult},
+    net::{Shutdown, ToSocketAddrs},
     sync::{
         atomic::{AtomicBool, Ordering::Relaxed},
         mpsc, Arc,
@@ -135,6 +135,7 @@ mod ssl;
 mod test;
 mod util;
 // #[cfg(target_os = "twizzler")]
+#[allow(unused_imports)]
 use shim::SmolTcpListener as TcpListener;
 // #[cfg(target_os = "twizzler")]
 use shim::SmolTcpStream as TcpStream;
@@ -174,10 +175,6 @@ impl From<Request> for Message {
 }
 
 // this trait is to make sure that Server implements Share and Send
-#[doc(hidden)]
-trait MustBeShareDummy: Sync + Send {}
-#[doc(hidden)]
-impl MustBeShareDummy for Server {}
 
 pub struct IncomingRequests<'a> {
     server: &'a Server,

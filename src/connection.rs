@@ -1,16 +1,11 @@
 //! Abstractions of Tcp and Unix socket types
 
+use std::net::{Shutdown, SocketAddr, ToSocketAddrs};
 #[cfg(unix)]
 use std::os::unix::net as unix_net;
+
 use crate::shim::SmolTcpListener as TcpListener;
 use crate::shim::SmolTcpStream as TcpStream; // comment out for testing on mac/linux
-use std::{
-    net::{Shutdown, SocketAddr, ToSocketAddrs},
-    // net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs},
-    // net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
-    path::PathBuf,
-};
-
 
 /// Unified listener. Either a [`TcpListener`] or [`std::os::unix::net::UnixListener`]
 pub enum Listener {

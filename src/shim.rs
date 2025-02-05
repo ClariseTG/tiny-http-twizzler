@@ -12,11 +12,11 @@ use std::{
 use lazy_static::lazy_static;
 use smoltcp::{
     iface::{Config, Context, Interface, SocketHandle, SocketSet},
-    phy::{Device, Loopback, Medium},
+    phy::{Device, Medium},
     socket::tcp::{ConnectError, ListenError, Socket, State},
     storage::RingBuffer,
     time::{Duration, Instant},
-    wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, Ipv4Address},
+    wire::{HardwareAddress, IpAddress, IpCidr, Ipv4Address},
 };
 use virtio_net::{DeviceWrapper, TwizzlerTransport};
 
@@ -37,7 +37,6 @@ struct Core {
 
 const IP: &str = "10.0.2.15"; // QEMU user networking default IP
 const GATEWAY: &str = "10.0.2.2"; // QEMU user networking gateway
-const PORT: u16 = 5555;
 
 const RX_BUF_SIZE: usize = 65536;
 const TX_BUF_SIZE: usize = 8192;
@@ -565,7 +564,7 @@ impl SmolTcpStream {
         // specifies shutdown of read, write, or both with enum Shutdown
         let engine = &ENGINE;
         let mut core = engine.core.lock().unwrap(); // acquire mutex
-        let mut socket = core.get_mutable_socket(self.inner.socket_handle);
+        let socket = core.get_mutable_socket(self.inner.socket_handle);
         log::debug!(
             "socket {} shutdown: {:?}, state = {:?}",
             self.inner.socket_handle,

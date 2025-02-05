@@ -1,13 +1,14 @@
-pub use self::custom_stream::CustomStream;
-pub use self::equal_reader::EqualReader;
-pub use self::fused_reader::FusedReader;
-pub use self::messages_queue::MessagesQueue;
-pub use self::refined_tcp_stream::RefinedTcpStream;
-pub use self::sequential::{SequentialReader, SequentialReaderBuilder};
-pub use self::sequential::{SequentialWriter, SequentialWriterBuilder};
-pub use self::task_pool::TaskPool;
-
 use std::str::FromStr;
+
+pub use self::{
+    custom_stream::CustomStream,
+    equal_reader::EqualReader,
+    fused_reader::FusedReader,
+    messages_queue::MessagesQueue,
+    refined_tcp_stream::RefinedTcpStream,
+    sequential::{SequentialReader, SequentialReaderBuilder, SequentialWriterBuilder},
+    task_pool::TaskPool,
+};
 
 mod custom_stream;
 mod equal_reader;
